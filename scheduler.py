@@ -21,8 +21,8 @@ maximum_connections = 16
 maximum_body_bytes = 1024 * 1024
 model_url = "http://127.0.0.1:8080/v1/chat/completions"#待对齐
 server_address = ("127.0.0.1", 8000)
-network_timeout_seconds = 20
-queue_wait_budget_seconds = 10
+network_timeout_seconds = 60  # 流式下是“两块数据之间最多等多久”，不是整段回答的总时长
+queue_wait_budget_seconds = 300  # baseline 里相当于不丢请求：排队多久本身就是要测的量
 log_path = Path("work/requests_minimal.jsonl")
 
 waiting_queue = queue.Queue(maxsize=queue_capacity)
@@ -86,6 +86,31 @@ def call_model(request_record):
     return status_code, response_bytes
 
 
+def stream_model(request_record):
+    """流式：打开到模型的连接，交给接收线程一边收一边转发给 Agent。
+
+    整段回答转发完之前本函数不返回，所以这个工作人员一直占着 K 个名额之一。
+    timeout 对每一次读取单独计时，所以流式下它的含义是“两块数据之间最多等多久”。
+    """
+    request_text = json.dumps(request_record["body"], ensure_ascii=False)
+    headers = {"Content-Type": "application/json"}
+    backend_request = urllib.request.Request(model_url, data=request_text.encode("utf-8"), headers=headers, method="POST")
+    try:
+        response = urllib.request.urlopen(backend_request, timeout=network_timeout_seconds)
+    except urllib.error.HTTPError as error:
+        # 模型还没开始生成就报错（例如上下文太长）：按普通 JSON 错误原样返回。
+        request_record["status"] = error.code
+        request_record["response"] = error.read()
+        request_record["error"] = "backend_http_error"
+        error.close()
+        return
+    request_record["status"] = response.status
+    request_record["stream"] = response
+    request_record["notice"].set()  # 通知接收线程：可以开始转发了
+    request_record["relay_done"].wait()  # 等接收线程转发完
+    response.close()
+
+
 def scheduler_worker(worker_number):
     while True:
         request_record = waiting_queue.get()
@@ -107,17 +132,23 @@ def scheduler_worker(worker_number):
             else:
                 # ==================== 附加：模型调用计时 开始 ====================
                 model_started_time = time.monotonic()
+                request_record["model_started_time"] = model_started_time
                 # ==================== 附加：模型调用计时 结束 ====================
 
                 try:
-                    status_code, response_bytes = call_model(request_record)
-                    request_record["status"] = status_code
-                    request_record["response"] = response_bytes
-                    if not 200 <= status_code < 300:
-                        request_record["error"] = "backend_http_error"
+                    if request_record["body"].get("stream") is True:
+                        stream_model(request_record)
+                    else:
+                        status_code, response_bytes = call_model(request_record)
+                        request_record["status"] = status_code
+                        request_record["response"] = response_bytes
+                        if not 200 <= status_code < 300:
+                            request_record["error"] = "backend_http_error"
                 finally:
                     # ==================== 附加：模型调用耗时 开始 ====================
-                    request_record["model_request_ms"] = (time.monotonic() - model_started_time) * 1000
+                    # 流式请求的耗时由接收线程在转发结束、写日志之前记录，这里不覆盖。
+                    if "stream" not in request_record:
+                        request_record["model_request_ms"] = (time.monotonic() - model_started_time) * 1000
                     # ==================== 附加：模型调用耗时 结束 ====================
 
         except Exception as error:
@@ -137,6 +168,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         request_record = {
             "body": None,
             "notice": threading.Event(),
+            "relay_done": threading.Event(),  # 流式：接收线程转发完后通知工作人员
             "status": None,
             "response": None,
             "error": None,
@@ -176,8 +208,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("messages must be nonempty list")
             if not isinstance(request_body.get("model"), str) or not request_body["model"]:
                 raise ValueError("model must be nonempty text")
-            if request_body.get("stream") is not False:
-                raise ValueError("requires stream=false")
+            if not isinstance(request_body.get("stream", False), bool):
+                raise ValueError("stream must be true or false")
         except (ValueError, TypeError, UnicodeError, OSError) as error:
             request_record["status"] = 408 if isinstance(error, TimeoutError) else 400
             request_record["error"] = str(error)
@@ -209,7 +241,36 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
 
         finished_notice = request_record["notice"]
         finished_notice.wait()
-        self.send_result(request_record)
+        if "stream" in request_record:
+            self.send_stream(request_record)
+        else:
+            self.send_result(request_record)
+
+    def send_stream(self, request_record):
+        """把模型的流式回答转给 Agent：每收到一行就立刻写出去。"""
+        response_sent = False
+        self.connection.settimeout(network_timeout_seconds)
+        try:
+            self.send_response(request_record["status"])
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Request-ID", request_record["request_id"])
+            self.end_headers()  # 不写 Content-Length：转发完就关闭连接，Agent 读到连接关闭即结束
+            for line in request_record["stream"]:
+                self.wfile.write(line)
+                self.wfile.flush()
+            response_sent = True
+        except OSError as error:
+            # Agent 断开，或模型超过 network_timeout_seconds 没有新数据（TimeoutError 也是 OSError）
+            request_record["error"] = "stream_interrupted: " + str(error)
+        finally:
+            # ==================== 附加：流式模型耗时 开始 ====================
+            request_record["model_request_ms"] = (time.monotonic() - request_record["model_started_time"]) * 1000
+            # ==================== 附加：流式模型耗时 结束 ====================
+            request_record["relay_done"].set()  # 放开工作人员，它才能去取下一个请求
+            # ==================== 附加：一个请求只写一行日志 开始 ====================
+            write_log(request_record, response_sent)
+            # ==================== 附加：一个请求只写一行日志 结束 ====================
 
     def send_result(self, request_record):
         response_sent = False
