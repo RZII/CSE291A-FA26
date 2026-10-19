@@ -1,0 +1,26 @@
+# All tunable settings live here. Scripts take --config <path> to use another file.
+
+[llm]
+base_url = "http://localhost:8080"  # later: point at the scheduler proxy instead
+model = "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q8_0"  # llama.cpp serves one model and ignores this; kept for logs
+temperature = 0.0
+seed = 0
+max_tokens = 1024                   # max generated tokens per step (one request)
+enable_thinking = false             # no-op for 2507-Instruct (its template has no thinking switch)
+read_timeout_s = 300                # max wait between two stream chunks (covers queueing before the first one)
+
+[agent]
+max_steps = 10
+
+[tools]
+# *_delay_s: extra wait added to every call of that tool (the "tool wait time" knob).
+# Never shown to the model; it only stretches the idle time between agent steps.
+python_delay_s = 0.0
+python_timeout_s = 10.0
+python_max_output_chars = 4000
+search_delay_s = 0.0
+search_top_k = 5
+
+[tasks]
+hotpotqa_prompt = "base"                    # system prompt variant: "base" | "search_again"
+hotpotqa_corpus = "hotpotqa_corpus.jsonl"   # file in data/; "hotpotqa_corpus_plus950.jsonl" = + 950 other dev questions' paragraphs
