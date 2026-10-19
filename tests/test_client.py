@@ -54,6 +54,12 @@ def test_reassembles_tool_call_fragments():
     assert r.t_send <= r.t_first_chunk <= r.t_first_delta <= r.t_end
 
 
+def test_stream_cut_before_done_raises():
+    cut = CANNED_TOOL_STREAM[: CANNED_TOOL_STREAM.index(b"data: [DONE]")]
+    with pytest.raises(LLMError, match=r"\[DONE\]"):
+        run_canned(cut)
+
+
 def test_http_error_raises():
     with pytest.raises(LLMError, match="400"):
         run_canned(b'{"error": "exceeds context"}', status=400)

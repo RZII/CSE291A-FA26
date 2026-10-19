@@ -73,6 +73,7 @@ class LLMClient:
         tool_calls = {}  # index -> {"id", "type", "function": {"name", "arguments"}}
         finish_reason = timings = usage = None
         t_first_chunk = t_first_delta = None
+        done = False
 
         t_send = time.time()
         async with self.http.stream("POST", "/v1/chat/completions", json=body, headers=headers) as resp:
@@ -88,6 +89,7 @@ class LLMClient:
                     t_first_chunk = now
                 data = line.removeprefix("data: ")
                 if data == "[DONE]":
+                    done = True
                     break
 
                 chunk = json.loads(data)
@@ -119,6 +121,8 @@ class LLMClient:
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
         t_end = time.time()
+        if not done:  # e.g. a proxy in between timed out mid-answer: never treat half an answer as final
+            raise LLMError("stream ended before [DONE]")
 
         message = {"role": "assistant", "content": "".join(content)}
         if reasoning:

@@ -31,6 +31,7 @@ def test_events_and_headers_for_a_two_step_task(tmp_path):
 
     # each request carries the ids in headers, and the request_id matches the events
     sent = [e["request_id"] for e in events if e["event"] == "request_sent"]
-    assert [h["X-Request-Id"] for h in client.headers] == sent and len(set(sent)) == 2
-    assert [h["X-Step"] for h in client.headers] == ["1", "2"]
-    assert client.headers[0]["X-Agent-Id"] == "agent-7" and client.headers[0]["X-Task-Id"] == "task-x"
+    assert [h["X-Request-ID"] for h in client.headers] == sent and len(set(sent)) == 2
+    assert [h["X-Step-ID"] for h in client.headers] == ["1", "2"]
+    h = client.headers[0]
+    assert (h["X-Run-ID"], h["X-Agent-ID"], h["X-Task-ID"]) == ("run_test", "agent-7", "task-x")

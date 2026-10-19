@@ -29,10 +29,12 @@ uv run python -m agent.client   # one streaming request; prints message, timings
 uv run python -m agent.tasks gsm8k 0      # run one task end to end; prints trajectory + grade
 uv run python -m agent.runner --agents 4 gsm8k:0-49 hotpotqa:0-49   # N concurrent agents, closed loop
 uv run python -m scripts.check_events logs/run_<time>                # validate a run's event log
+uv run python scheduler.py   # 2号's FIFO scheduler on :8000; then add --set llm.base_url=http://127.0.0.1:8000 to the runner
 ```
 
 Each run writes `logs/run_<time>/events.jsonl` (one event per line; schema in `agent/events.py`) and
-`trajectories/<task_id>.json`. Requests carry `X-Agent-Id` / `X-Task-Id` / `X-Step` / `X-Request-Id` headers.
+`trajectories/<task_id>.json`. Requests carry `X-Run-ID` / `X-Task-ID` / `X-Agent-ID` / `X-Request-ID` / `X-Step-ID` headers
+(the names the scheduler in `scheduler.py` requires).
 
 Task sets (committed): `data/gsm8k_50.jsonl`, `data/hotpotqa_50.jsonl`, `data/hotpotqa_corpus.jsonl`.
 GSM8K test and HotpotQA dev-distractor, 50 each, seed 0, sources pinned by commit. Rebuild with

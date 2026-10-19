@@ -12,8 +12,9 @@ task-level events). Event types and their extra fields:
     tool_end      tool, call_id, ok, output_chars, delay_s
     task_end      status, steps, correct, pred, em, f1, final_context_tokens, error
 
-Each request also carries X-Agent-Id / X-Task-Id / X-Step / X-Request-Id headers, so a
-proxy in front of llama.cpp can log the same request_id. (Not yet aligned with 2号 / 4号.)
+Each request also carries X-Run-ID / X-Task-ID / X-Agent-ID / X-Request-ID / X-Step-ID headers
+(the names 2号's scheduler requires), so the scheduler logs the same request_id. The event
+format itself is not yet aligned with 4号.
 """
 
 import json
@@ -51,7 +52,13 @@ class Tracer:
 
     def new_request(self, step: int) -> tuple[str, dict]:
         request_id = uuid.uuid4().hex
-        headers = {"X-Agent-Id": self.agent_id, "X-Task-Id": self.task_id, "X-Step": str(step), "X-Request-Id": request_id}
+        headers = {
+            "X-Run-ID": self.log.run_id if self.log else "-",
+            "X-Task-ID": self.task_id,
+            "X-Agent-ID": self.agent_id,
+            "X-Request-ID": request_id,
+            "X-Step-ID": str(step),
+        }
         return request_id, headers
 
 
