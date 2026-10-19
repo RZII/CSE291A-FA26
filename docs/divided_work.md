@@ -14,7 +14,6 @@ baseline 先做先来先服务，固定并发数
 
 装好 llama.cpp，搞清 -c、--parallel、cache 复用这些参数怎么用，把内存预算定下来
 写一键实验脚本：启动 server，起 N 个 agent，跑完自动存日志
-正式数据在你的 Mac 上跑，所以这个角色你来做比较顺
 
 4 号：Eval
 

@@ -1,3 +1,5 @@
+We will have $200 AWS Credit for API/Instances/any AWS service.
+
 Option 1: Memory-Aware Agent Edge Serving
 Project description
 Agent workloads generate multiple dependent model requests, use tools between requests, and retain context across steps. On a memory-constrained machine, admitting too much work can increase latency or exhaust memory; admitting too little can leave resources idle. This project investigates how a serving system should manage concurrent agent tasks and their context under a limited memory budget.
