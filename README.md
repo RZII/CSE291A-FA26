@@ -29,6 +29,7 @@ uv run python -m agent.client   # one streaming request; prints message, timings
 uv run python -m agent.tasks gsm8k 0      # run one task end to end; prints trajectory + grade
 uv run python -m agent.runner --agents 4 gsm8k:0-49 hotpotqa:0-49   # N concurrent agents, closed loop
 uv run python -m scripts.check_events logs/run_<time>                # validate a run's event log
+uv run python -m scripts.task_summary logs/run_<time> --scheduler-k 2   # one row per task -> task_summary.jsonl
 uv run python scheduler.py   # 2号's FIFO scheduler on :8000; then add --set llm.base_url=http://127.0.0.1:8000 to the runner
 ```
 
