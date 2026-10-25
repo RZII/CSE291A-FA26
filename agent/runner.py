@@ -41,10 +41,19 @@ async def run_task(task: dict, agent_id: str, cfg: Config | None = None, log: Ev
     t_start = time.time()
     tracer.emit("task_start", ts=t_start, task_type=task["type"])
     try:
-        res = await run_agent(
-            task["question"], system_prompt(task["type"], cfg), make_tools(task["type"], cfg), client,
-            cfg.agent.max_steps, tracer,
+        res = await asyncio.wait_for(
+            run_agent(
+                task["question"], system_prompt(task["type"], cfg), make_tools(task["type"], cfg), client,
+                cfg.agent.max_steps, tracer,
+            ),
+            cfg.agent.task_timeout_s or None,
         )
+    except TimeoutError:  # task_timeout_s hit; the in-flight request (if any) is cancelled, so it has no request_end
+        tracer.emit("task_end", status="timeout", steps=None, correct=False, pred=None, em=None, f1=None,
+                    error=f"task exceeded {cfg.agent.task_timeout_s:g}s", final_context_tokens=None)
+        return {"task_id": task["id"], "agent_id": agent_id, "status": "timeout", "steps": None,
+                "grade": {"pred": None, "correct": False}, "error": "timeout", "t_start": t_start,
+                "t_end": time.time(), "task": task}
     except Exception:
         tracer.emit("task_end", status="crash", error=traceback.format_exc())
         raise
@@ -97,15 +106,16 @@ def main():
     p.add_argument("--agents", type=int, default=4)
     p.add_argument("--seed", type=int, default=0, help="shuffle seed for the task order")
     p.add_argument("--config", default=str(DEFAULT_PATH))
+    p.add_argument("--out", help="run directory (default logs/run_<time>); the experiment script sets it")
     p.add_argument("--set", action="append", default=[], metavar="SECTION.FIELD=VALUE", help="override one config field")
     args = p.parse_args()
 
     cfg = load_config(args.config, args.set)
     tasks = select_tasks(args.specs)
     random.Random(args.seed).shuffle(tasks)  # interleave short and long tasks
-    run_id = f"run_{datetime.now():%Y%m%d-%H%M%S}"
-    out = LOGS / run_id
-    (out / "trajectories").mkdir(parents=True)
+    out = Path(args.out) if args.out else LOGS / f"run_{datetime.now():%Y%m%d-%H%M%S}"
+    run_id = out.name
+    (out / "trajectories").mkdir(parents=True, exist_ok=bool(args.out))
     log = EventLog(out / "events.jsonl", run_id)
     (out / "config.json").write_text(json.dumps({"agents": args.agents, "seed": args.seed, **asdict(cfg)}, indent=2))
 

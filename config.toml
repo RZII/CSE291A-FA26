@@ -7,10 +7,12 @@ temperature = 0.0
 seed = 0
 max_tokens = 1024                   # max generated tokens per step (one request)
 enable_thinking = false             # no-op for 2507-Instruct (its template has no thinking switch)
+cache_prompt = true                 # llama.cpp reuses the slot's cached prefix; false = recompute every prompt
 read_timeout_s = 300                # max wait between two stream chunks (covers queueing before the first one)
 
 [agent]
 max_steps = 10
+task_timeout_s = 0                  # wall-clock limit per task, queueing included; 0 = none. Hit -> status "timeout"
 
 [tools]
 # *_delay_s: extra wait added to every call of that tool (the "tool wait time" knob).

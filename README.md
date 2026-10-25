@@ -41,5 +41,36 @@ Task sets (committed): `data/gsm8k_50.jsonl`, `data/hotpotqa_50.jsonl`, `data/ho
 GSM8K test and HotpotQA dev-distractor, 50 each, seed 0, sources pinned by commit. Rebuild with
 `uv run --group build python scripts/build_tasks.py`.
 
-All settings (server URL, `max_steps`, `temperature`, `seed`, `max_tokens`, tool timeouts / top-k /
-per-tool `*_delay_s`) live in `config.toml`.
+All settings (server URL, `max_steps`, `task_timeout_s`, `temperature`, `seed`, `max_tokens`, `cache_prompt`,
+tool timeouts / top-k / per-tool `*_delay_s`) live in `config.toml`.
+
+## Experiments
+
+`scripts/run_experiment.py` runs a whole sweep with one command. Per run it starts a fresh llama-server
+(cold caches), `scheduler.py` with the run's K, the memory sampler and `agent.runner`, then stops all of
+them; everything lands in `logs/<name>/<condition>_r<repeat>/`. Stop any llama-server / scheduler on
+ports 8080 / 8000 first.
+
+```bash
+uv run python -m scripts.run_experiment --matrix experiments/phase1.toml --dry-run   # list the runs
+uv run python -m scripts.run_experiment --matrix experiments/phase1.toml --blocks A  # run block A
+uv run python -m scripts.analyze logs/phase1                  # -> runs.csv, conditions.csv, a table per block
+uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/plots/*.png
+```
+
+- `experiments/phase1.toml` is the Phase 1 matrix: a baseline and blocks A–E, each varying one factor
+  (concurrency, KV budget, context length, tool idle time, context retention). Conditions shared by
+  several blocks run once.
+- Runs go in shuffled order with a 60 s cooldown between them (`--order`, `--cooldown`), and
+  `pmset -g therm` is saved before and after each run, so laptop heat does not line up with one factor.
+- A finished run is skipped, so an interrupted experiment (Ctrl+C) can be rerun with the same command.
+- Ad-hoc sweeps without a matrix file: `--name x --tasks ... --k 1 2 4 --agents 2 8 --sweep SECTION.FIELD=a,b
+  --set SECTION.FIELD=v` (full cartesian product).
+- Memory budget: llama-server allocates the KV pool for `-c` tokens at startup (Qwen3-4B: 144 KiB/token,
+  so 32K = 4.5 GiB). Contexts pushed out of a slot are copied to a host-RAM prompt cache (`--cache-ram`,
+  default 8 GiB) and restored when the agent returns. `memory.jsonl` tracks both: `footprint_mb` (memory
+  the server dirtied: KV pool + RAM cache + buffers; RSS also counts the mmapped weights) and `kv_tokens`
+  (tokens held by the slots, from `/slots`).
+- The scheduler now takes `--k`, `--queue-capacity`, `--log`, ... (`python scheduler.py -h`); the
+  experiment script gives it a queue large enough that it never rejects, so failures come from the model side.
+  Failed requests are logged with a `kind` (`context_overflow`, `timeout`, `queue_full`, ...).

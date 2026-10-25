@@ -7,10 +7,11 @@ task-level events). Event types and their extra fields:
     request_sent  request_id
     first_token   request_id, ts_first_delta   (ts = first SSE chunk = server's 1st token)
     request_end   request_id, finish_reason, timings (raw llama.cpp), usage (raw)
-    request_error request_id, error
+    request_error request_id, error, kind (agent/client.py error_kind), http_status
     tool_start    tool, call_id
     tool_end      tool, call_id, ok, output_chars, delay_s
     task_end      status, steps, correct, pred, em, f1, final_context_tokens, error
+                  (status "timeout": agent.task_timeout_s hit; steps is null, the last request has no end)
 
 Each request also carries X-Run-ID / X-Task-ID / X-Agent-ID / X-Request-ID / X-Step-ID headers
 (the names 2号's scheduler requires), so the scheduler logs the same request_id. The event

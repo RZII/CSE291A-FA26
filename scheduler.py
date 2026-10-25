@@ -3,6 +3,7 @@
 日志每次请求只写一行，不再记录一长串阶段事件和重复的原始时间。
 所有代码在本文件；完整响应仍原样交给 Agent。
 """
+import argparse
 import json
 import queue
 import signal
@@ -14,16 +15,28 @@ from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-# 配置：执行数、等待容量、连接数是三个不同限制。
-concurrency = 2
-queue_capacity = 8
-maximum_connections = 16
+# 配置：执行数、等待容量、连接数是三个不同限制。默认值同原版，均可用命令行覆盖：
+#   python scheduler.py --k 4 --queue-capacity 256 --log logs/run_x/scheduler.jsonl
+argument_parser = argparse.ArgumentParser()
+argument_parser.add_argument("--k", type=int, default=2, help="固定并发 K")
+argument_parser.add_argument("--queue-capacity", type=int, default=8, help="等待队列容量，满了返回 429")
+argument_parser.add_argument("--max-connections", type=int, default=16, help="接收连接上限，满了返回 503")
+argument_parser.add_argument("--model-url", default="http://127.0.0.1:8080/v1/chat/completions")
+argument_parser.add_argument("--port", type=int, default=8000)
+argument_parser.add_argument("--network-timeout", type=float, default=60, help="秒；流式下是两块数据之间最多等多久")
+argument_parser.add_argument("--queue-budget", type=float, default=300, help="秒；排队超过即返回 504")
+argument_parser.add_argument("--log", default="work/requests_minimal.jsonl")
+arguments = argument_parser.parse_args()
+
+concurrency = arguments.k
+queue_capacity = arguments.queue_capacity
+maximum_connections = arguments.max_connections
 maximum_body_bytes = 1024 * 1024
-model_url = "http://127.0.0.1:8080/v1/chat/completions"#待对齐
-server_address = ("127.0.0.1", 8000)
-network_timeout_seconds = 60  # 流式下是“两块数据之间最多等多久”，不是整段回答的总时长
-queue_wait_budget_seconds = 300  # baseline 里相当于不丢请求：排队多久本身就是要测的量
-log_path = Path("work/requests_minimal.jsonl")
+model_url = arguments.model_url
+server_address = ("127.0.0.1", arguments.port)
+network_timeout_seconds = arguments.network_timeout  # 流式下是“两块数据之间最多等多久”，不是整段回答的总时长
+queue_wait_budget_seconds = arguments.queue_budget  # baseline 里相当于不丢请求：排队多久本身就是要测的量
+log_path = Path(arguments.log)
 
 waiting_queue = queue.Queue(maxsize=queue_capacity)
 connection_slots = threading.BoundedSemaphore(maximum_connections)
@@ -51,6 +64,9 @@ def write_log(request_record, response_sent):
         "task_id": request_record["task_id"],
         "agent_id": request_record["agent_id"],
         "request_id": request_record["request_id"],
+        "step": request_record["step"],
+        "k": concurrency,
+        "model_started_unix_s": request_record["model_started_unix_s"],
         "queue_ms": request_record["queue_ms"],
         "model_request_ms": request_record["model_request_ms"],
         "total_ms": total_ms,
@@ -133,6 +149,7 @@ def scheduler_worker(worker_number):
                 # ==================== 附加：模型调用计时 开始 ====================
                 model_started_time = time.monotonic()
                 request_record["model_started_time"] = model_started_time
+                request_record["model_started_unix_s"] = time.time()  # 与 Agent 事件日志对齐用
                 # ==================== 附加：模型调用计时 结束 ====================
 
                 try:
@@ -178,7 +195,9 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             "task_id": self.headers.get("X-Task-ID", ""),
             "agent_id": self.headers.get("X-Agent-ID", ""),
             "request_id": self.headers.get("X-Request-ID", ""),
+            "step": self.headers.get("X-Step-ID", ""),
             "timestamp_unix_s": time.time(),
+            "model_started_unix_s": None,
             "received_time": time.monotonic(),
             "enqueued_time": None,
             "queue_ms": None,
@@ -189,7 +208,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         try:
             if self.path != "/v1/chat/completions":
                 raise ValueError("unknown path")
-            # 保留原接口五个标签的要求，但 step 不再重复写进本层日志。
+            # 保留原接口五个标签的要求；step 也写进本层日志，便于按步统计排队。
             for field in ["run_id", "task_id", "agent_id", "request_id"]:
                 if not request_record[field].strip():
                     raise ValueError("missing identity: " + field)

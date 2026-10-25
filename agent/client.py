@@ -28,6 +28,22 @@ from agent.config import LLMConfig, load_config
 class LLMError(Exception):
     """Server returned a non-200 status or an error inside the stream."""
 
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+def error_kind(e: Exception) -> str:
+    """Coarse failure class for the event log, so failure rates can be split by cause."""
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, httpx.HTTPError):
+        return "connection"
+    status = getattr(e, "status", None)
+    if status == 400 and "exceed_context_size" in str(e):
+        return "context_overflow"
+    return {429: "queue_full", 503: "unavailable", 504: "queue_expired"}.get(status, "http" if status else "stream")
+
 
 @dataclass
 class ChatResult:
@@ -58,6 +74,7 @@ class LLMClient:
             "messages": messages,
             "temperature": self.cfg.temperature,
             "seed": self.cfg.seed,
+            "cache_prompt": self.cfg.cache_prompt,
             "max_tokens": self.cfg.max_tokens,
             "chat_template_kwargs": {"enable_thinking": self.cfg.enable_thinking},
             "stream": True,
@@ -79,7 +96,7 @@ class LLMClient:
         async with self.http.stream("POST", "/v1/chat/completions", json=body, headers=headers) as resp:
             if resp.status_code != 200:
                 await resp.aread()
-                raise LLMError(f"HTTP {resp.status_code}: {resp.text}")
+                raise LLMError(f"HTTP {resp.status_code}: {resp.text}", resp.status_code)
 
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):

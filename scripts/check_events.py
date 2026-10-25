@@ -34,8 +34,9 @@ def main(run_dir: str):
         steps = [e["step"] for e in evs if e["event"] == "request_sent"]
         if steps != list(range(1, len(steps) + 1)):
             problems.append(f"{tid}: request steps {steps}")
+    timed_out = {e["task_id"] for e in events if e["event"] == "task_end" and e["status"] == "timeout"}
     for rid, r in by_req.items():
-        if "request_error" in r:
+        if "request_error" in r or ("request_end" not in r and r["request_sent"]["task_id"] in timed_out):
             continue
         if not {"request_sent", "first_token", "request_end"} <= r.keys():
             problems.append(f"request {rid}: missing {sorted({'request_sent', 'first_token', 'request_end'} - r.keys())}")

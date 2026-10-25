@@ -1,0 +1,60 @@
+# Phase 1 matrix: real tasks (GSM8K + HotpotQA), one factor per block, shared baseline.
+#
+#   uv run python -m scripts.run_experiment --matrix experiments/phase1.toml --dry-run
+#   uv run python -m scripts.run_experiment --matrix experiments/phase1.toml            # all blocks
+#   uv run python -m scripts.run_experiment --matrix experiments/phase1.toml --blocks A  # one block
+#
+# A condition = baseline + a block's overrides. Identical conditions across blocks run once and are
+# reused (e.g. A's k2_a4 is the baseline of C/D/E; A's k4_a8 is B's 32K point).
+# Keys: k, agents, ctx, np, cache_ram (server / scheduler) or "section.field" from config.toml.
+
+name = "phase1"
+tasks = ["gsm8k:0-9", "hotpotqa:0-9"]
+repeats = 2
+
+[baseline]
+k = 2                                 # scheduler concurrency
+agents = 4                            # closed-loop agents
+ctx = 32768                           # llama-server -c: KV pool in tokens = the memory budget (32K = 4.5 GiB)
+np = 4                                # llama-server -np: slots sharing that pool (-kvu)
+cache_ram = 8192                      # llama-server --cache-ram MiB: host RAM cache for contexts pushed out of a slot
+"tools.python_delay_s" = 3
+"tools.search_delay_s" = 3
+"tools.search_top_k" = 5
+"llm.cache_prompt" = true
+"agent.task_timeout_s" = 600          # a task still running after 10 min counts as "timeout"
+
+[[block]]
+name = "A"
+factor = "concurrency: scheduler K x number of agents"
+grid = { k = [1, 2, 4], agents = [2, 4, 8] }
+
+[[block]]
+name = "B"
+factor = "memory budget: KV pool size (-c) under heavy load"
+base = { k = 4, agents = 8 }
+grid = { ctx = [4096, 8192, 16384, 32768] }
+
+[[block]]
+name = "C"
+factor = "context length: search results per call (HotpotQA context growth per step)"
+grid = { "tools.search_top_k" = [2, 5, 10] }
+
+[[block]]
+name = "D"
+factor = "idle time between agent steps: extra tool delay (s)"
+conditions = [
+    { "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { "tools.python_delay_s" = 1, "tools.search_delay_s" = 1 },
+    { "tools.python_delay_s" = 3, "tools.search_delay_s" = 3 },
+    { "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+]
+
+[[block]]
+name = "E"
+factor = "context retention: slot KV + host RAM cache / no RAM cache / no prefix reuse at all"
+conditions = [
+    {},
+    { cache_ram = 0 },
+    { "llm.cache_prompt" = false },
+]

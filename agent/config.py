@@ -21,12 +21,14 @@ class LLMConfig:
     seed: int
     max_tokens: int
     enable_thinking: bool
+    cache_prompt: bool
     read_timeout_s: float
 
 
 @dataclass(frozen=True)
 class AgentConfig:
     max_steps: int
+    task_timeout_s: float
 
 
 @dataclass(frozen=True)

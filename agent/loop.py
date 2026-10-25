@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from agent.client import ChatResult, LLMClient, LLMError
+from agent.client import ChatResult, LLMClient, LLMError, error_kind
 from agent.config import load_config
 from agent.events import NO_TRACE, Tracer
 from agent.tools import Tool
@@ -86,7 +86,8 @@ async def run_agent(
             r = await client.chat(messages, schemas, headers=headers)
         except (LLMError, httpx.HTTPError) as e:
             error = f"{type(e).__name__}: {e}"
-            tracer.emit("request_error", step, request_id=request_id, error=error)
+            tracer.emit("request_error", step, request_id=request_id, error=error,
+                        kind=error_kind(e), http_status=getattr(e, "status", None))
             return AgentResult("error", None, messages, step_results, error=error)
         tracer.emit("first_token", step, ts=r.t_first_chunk, request_id=request_id, ts_first_delta=r.t_first_delta)
         tracer.emit("request_end", step, ts=r.t_end, request_id=request_id,
