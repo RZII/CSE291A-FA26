@@ -29,7 +29,7 @@ from agent.client import LLMClient
 from agent.config import DEFAULT_PATH, Config, load_config
 from agent.events import EventLog, Tracer
 from agent.loop import run_agent
-from agent.tasks import grade, make_tools, select_tasks, system_prompt
+from agent.tasks import grade, long_answer, make_tools, select_tasks, system_prompt
 
 LOGS = Path(__file__).resolve().parent.parent / "logs"
 
@@ -39,11 +39,12 @@ async def run_task(task: dict, agent_id: str, cfg: Config | None = None, log: Ev
     tracer = Tracer(log, agent_id, task["id"])
     client = LLMClient(cfg.llm)
     t_start = time.time()
-    tracer.emit("task_start", ts=t_start, task_type=task["type"])
+    long = long_answer(task, cfg)
+    tracer.emit("task_start", ts=t_start, task_type=task["type"], long_answer=long)
     try:
         res = await asyncio.wait_for(
             run_agent(
-                task["question"], system_prompt(task["type"], cfg), make_tools(task["type"], cfg), client,
+                task["question"], system_prompt(task["type"], cfg, long), make_tools(task["type"], cfg), client,
                 cfg.agent.max_steps, tracer,
             ),
             cfg.agent.task_timeout_s or None,

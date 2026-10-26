@@ -10,6 +10,7 @@ each run dir. Run-level fields:
     failure_rate                (error + crash + timeout) / tasks: the task never produced an answer
     completion_p50/p95/p99_s    task_start -> task_end, all tasks
     gsm8k_/hotpotqa_completion_p50_s    the same per type: are long tasks delayed unfairly?
+    long_tasks, short_/long_completion_p50/p95_s    the same by tasks.response_length (long = 500+ word reply)
     queue_p50/p95_s             per request, scheduler queue_ms
     ttft_p50/p95_s              per request, request_sent -> first chunk (includes queueing)
     makespan_s                  first task_start -> last task_end
@@ -21,6 +22,7 @@ each run dir. Run-level fields:
     prompt_tokens, cached_tokens, cached_frac        llama.cpp timings: prompt_n / cache_n sums
     recompute_tokens            within-task prefix lost between steps (see task_summary.py)
     sched_overhead_ms           mean of total_ms - queue_ms - model_request_ms per request
+    max_sample_gap_s            longest gap between memory samples; > 10 s = the machine slept (warning printed)
 """
 
 import argparse
@@ -31,9 +33,11 @@ import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from agent.client import CONTEXT_FULL
 from scripts.task_summary import summarize
 
 FAILED = ("error", "crash", "timeout")
+MAX_GAP_S = 10
 
 
 def pct(xs: list[float], q: float) -> float | None:
@@ -44,6 +48,13 @@ def pct(xs: list[float], q: float) -> float | None:
     i = q * (len(xs) - 1)
     lo, hi = math.floor(i), math.ceil(i)
     return xs[lo] + (xs[hi] - xs[lo]) * (i - lo)
+
+
+def error_kind(e: dict) -> str:
+    """The logged kind, except that runs logged before agent.client recognized in-stream KV-pool overflow
+    have it as "stream"."""
+    kind = e.get("kind", "other")
+    return "context_overflow" if kind == "stream" and CONTEXT_FULL in e.get("error", "") else kind
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -86,8 +97,10 @@ def analyze_run(run: Path) -> dict:
     idle = [m["footprint_mb"] for m in mem if m["ts"] < t0]
     kv = [m["kv_tokens"] for m in mem if m.get("kv_tokens") is not None]
     ok_sched = [r for r in sched if r["queue_ms"] is not None and r["model_request_ms"] is not None]
-    errors = Counter(e.get("kind", "other") for e in events if e["event"] == "request_error")
+    errors = Counter(error_kind(e) for e in events if e["event"] == "request_error")
     completion = lambda kind=None: [t["total_completion_ms"] / 1000 for t in tasks if kind in (None, t["task_type"])]
+    long = {e["task_id"]: e.get("long_answer", False) for e in events if e["event"] == "task_start"}
+    by_length = lambda is_long: [t["total_completion_ms"] / 1000 for t in tasks if long[t["task_id"]] == is_long]
 
     row = {
         "run": run.name, "condition": cond["name"], "blocks": ";".join(blocks), "repeat": cond["repeat"],
@@ -101,6 +114,9 @@ def analyze_run(run: Path) -> dict:
         "completion_p99_s": pct(completion(), 0.99),
         **{f"{kind}_completion_{q}_s": pct(completion(kind), v)
            for kind in ("gsm8k", "hotpotqa") for q, v in (("p50", 0.5), ("p95", 0.95))},
+        "long_tasks": sum(long.values()),
+        **{f"{name}_completion_{q}_s": pct(by_length(is_long), v)
+           for name, is_long in (("short", False), ("long", True)) for q, v in (("p50", 0.5), ("p95", 0.95))},
         "queue_p50_s": pct([r["queue_ms"] / 1000 for r in ok_sched], 0.5),
         "queue_p95_s": pct([r["queue_ms"] / 1000 for r in ok_sched], 0.95),
         "ttft_p50_s": pct(ttft, 0.5), "ttft_p95_s": pct(ttft, 0.95),
@@ -122,7 +138,13 @@ def analyze_run(run: Path) -> dict:
         "recompute_tokens": sum(t["recompute_tokens"] for t in tasks),
         "sched_overhead_ms": statistics.mean(r["total_ms"] - r["queue_ms"] - r["model_request_ms"] for r in ok_sched)
         if ok_sched else None,
+        # longest gap between memory samples: the sampler runs every 0.5 s, so a gap of many seconds means the
+        # machine slept (e.g. laptop lid closed) and every timing in this run is invalid
+        "max_sample_gap_s": max((b["ts"] - a["ts"] for a, b in zip(mem, mem[1:])), default=None),
     }
+    if (row["max_sample_gap_s"] or 0) > MAX_GAP_S:
+        print(f"WARNING {run}: {row['max_sample_gap_s']:.0f}s without memory samples; the machine probably slept, "
+              f"so its timings are invalid. Move the run dir away and rerun it.")
     return row
 
 
@@ -186,7 +208,8 @@ def main():
     # one table per block (a condition shared by several blocks shows up in each); no blocks -> one table
     blocks = sorted({b for c in conds for b in str(c["blocks"]).split(";") if b}) or [None]
     cols = ("accuracy", "failure_rate", "completion_p50_s", "completion_p95_s", "queue_p95_s",
-            "throughput_tasks_per_min", "footprint_peak_mb", "kv_tokens_peak", "cached_frac", "recompute_tokens")
+            "throughput_tasks_per_min", "output_tokens_p95", "footprint_peak_mb", "kv_tokens_peak", "cached_frac",
+            "recompute_tokens")
     for b in blocks:
         print(f"\n== block {b} ==" if b else "")
         print(f"{'condition':<36}" + "".join(f"{c[:12]:>14}" for c in cols))

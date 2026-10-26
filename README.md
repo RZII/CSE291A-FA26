@@ -61,7 +61,7 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
 - `experiments/phase1.toml` is the Phase 1 matrix: a baseline and blocks A–E, each varying one factor
   (concurrency, KV budget, context length, tool idle time, context retention). Conditions shared by
   several blocks run once.
-- Runs go in shuffled order with a 60 s cooldown between them (`--order`, `--cooldown`), and
+- Runs go in shuffled order with a 180 s cooldown between them (`--order`, `--cooldown`), and
   `pmset -g therm` is saved before and after each run, so laptop heat does not line up with one factor.
 - A finished run is skipped, so an interrupted experiment (Ctrl+C) can be rerun with the same command.
 - Ad-hoc sweeps without a matrix file: `--name x --tasks ... --k 1 2 4 --agents 2 8 --sweep SECTION.FIELD=a,b

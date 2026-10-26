@@ -23,6 +23,7 @@ cache_ram = 8192                      # llama-server --cache-ram MiB: host RAM c
 "tools.search_top_k" = 5
 "llm.cache_prompt" = true
 "agent.task_timeout_s" = 600          # a task still running after 10 min counts as "timeout"
+"tasks.response_length" = "short"     # final reply length (block F)
 
 [[block]]
 name = "A"
@@ -58,3 +59,14 @@ conditions = [
     { cache_ram = 0 },
     { "llm.cache_prompt" = false },
 ]
+
+[[block]]
+name = "F"
+factor = "response length: final reply short / 500+ word explanation / half and half"
+grid = { "tasks.response_length" = ["short", "long", "mixed"] }
+
+[[block]]
+name = "G"
+factor = "long responses under a tight KV budget: decode growth vs the shared pool"
+base = { k = 4, agents = 8, ctx = 4096 }
+grid = { "tasks.response_length" = ["short", "long"] }

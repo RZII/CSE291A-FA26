@@ -44,6 +44,7 @@ class ToolsConfig:
 class TasksConfig:
     hotpotqa_prompt: str
     hotpotqa_corpus: str
+    response_length: str
 
 
 @dataclass(frozen=True)

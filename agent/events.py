@@ -3,7 +3,7 @@
 Every event has: ts (time.time()), event, run_id, agent_id, task_id, step (null for
 task-level events). Event types and their extra fields:
 
-    task_start    task_type
+    task_start    task_type, long_answer (tasks.response_length)
     request_sent  request_id
     first_token   request_id, ts_first_delta   (ts = first SSE chunk = server's 1st token)
     request_end   request_id, finish_reason, timings (raw llama.cpp), usage (raw)

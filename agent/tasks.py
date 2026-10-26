@@ -44,8 +44,31 @@ HOTPOTQA_PROMPTS = {
 }
 
 
-def system_prompt(kind: str, cfg: Config) -> str:
-    return GSM8K_PROMPT if kind == "gsm8k" else HOTPOTQA_PROMPTS[cfg.tasks.hotpotqa_prompt]
+# tasks.response_length = "long": the same tasks, but the final reply carries a long explanation, so the workload
+# has long responses (decode-heavy steps whose KV grows while generating). The answer line is unchanged.
+GSM8K_LONG = (
+    "give a one-sentence explanation",
+    "write a detailed step-by-step explanation for a student (at least 500 words: what each quantity means "
+    "and why each operation is needed),",
+)
+HOTPOTQA_LONG = (
+    "End with a line",
+    "Before the answer line, write a detailed explanation of at least 500 words: which paragraphs you found, "
+    "what each one says, and how they combine into the answer. End with a line",
+)
+
+
+def long_answer(task: dict, cfg: Config) -> bool:
+    """"mixed": every other task by its index in the task file, so both types get both lengths."""
+    mode = cfg.tasks.response_length
+    if mode not in ("short", "long", "mixed"):
+        raise ValueError(f"unknown tasks.response_length {mode!r}")
+    return mode == "long" or (mode == "mixed" and task.get("index", 0) % 2 == 1)
+
+
+def system_prompt(kind: str, cfg: Config, long: bool = False) -> str:
+    prompt = GSM8K_PROMPT if kind == "gsm8k" else HOTPOTQA_PROMPTS[cfg.tasks.hotpotqa_prompt]
+    return prompt.replace(*(GSM8K_LONG if kind == "gsm8k" else HOTPOTQA_LONG)) if long else prompt
 
 
 def load_tasks(kind: str) -> list[dict]:
@@ -59,7 +82,7 @@ def select_tasks(specs: list[str]) -> list[dict]:
         kind, rng = spec.split(":")
         lo, _, hi = rng.partition("-")
         all_tasks = load_tasks(kind)
-        tasks += [all_tasks[i] for i in range(int(lo), int(hi or lo) + 1)]
+        tasks += [all_tasks[i] | {"index": i} for i in range(int(lo), int(hi or lo) + 1)]
     return tasks
 
 
@@ -156,7 +179,8 @@ async def _demo(kind: str, index: int):
     task = load_tasks(kind)[index]
     client = LLMClient(cfg.llm)
     try:
-        res = await run_agent(task["question"], system_prompt(kind, cfg), make_tools(kind, cfg), client, cfg.agent.max_steps)
+        prompt = system_prompt(kind, cfg, long_answer(task, cfg))
+        res = await run_agent(task["question"], prompt, make_tools(kind, cfg), client, cfg.agent.max_steps)
     finally:
         await client.aclose()
     print_result(res)

@@ -237,7 +237,7 @@ def main():
     p.add_argument("--sweep", action="append", default=[], metavar="SECTION.FIELD=V1,V2")
     p.add_argument("--set", action="append", default=[], metavar="SECTION.FIELD=V")
     p.add_argument("--order", choices=["shuffle", "sequential"], default="shuffle")
-    p.add_argument("--cooldown", type=float, default=60, help="seconds of idle between runs")
+    p.add_argument("--cooldown", type=float, default=180, help="seconds of idle between runs (a fanless laptop needs a while)")
     p.add_argument("--llama-cmd", default="llama serve", help="how to launch llama-server")
     p.add_argument("--model", default=MODEL)
     p.add_argument("--network-timeout", type=float, default=600, help="scheduler/agent read timeout, seconds")

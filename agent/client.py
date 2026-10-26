@@ -24,6 +24,8 @@ import httpx
 
 from agent.config import LLMConfig, load_config
 
+CONTEXT_FULL = "Context size has been exceeded"  # llama.cpp's in-stream error when the KV pool runs out
+
 
 class LLMError(Exception):
     """Server returned a non-200 status or an error inside the stream."""
@@ -41,6 +43,9 @@ def error_kind(e: Exception) -> str:
         return "connection"
     status = getattr(e, "status", None)
     if status == 400 and "exceed_context_size" in str(e):
+        return "context_overflow"
+    # the shared KV pool filled up mid-decode: llama.cpp reports it inside the stream as a 500, not as an HTTP status
+    if CONTEXT_FULL in str(e):
         return "context_overflow"
     return {429: "queue_full", 503: "unavailable", 504: "queue_expired"}.get(status, "http" if status else "stream")
 
