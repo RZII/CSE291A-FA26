@@ -1,0 +1,518 @@
+{
+  "spec": {
+    "name": "phase1",
+    "tasks": [
+      "gsm8k:0-9",
+      "hotpotqa:0-9"
+    ],
+    "repeats": 2,
+    "baseline": {
+      "k": 2,
+      "agents": 4,
+      "ctx": 32768,
+      "np": 4,
+      "cache_ram": 8192,
+      "tools.python_delay_s": 3,
+      "tools.search_delay_s": 3,
+      "tools.search_top_k": 5,
+      "llm.cache_prompt": true,
+      "agent.task_timeout_s": 600,
+      "tasks.response_length": "short"
+    },
+    "block": [
+      {
+        "name": "A",
+        "factor": "concurrency: scheduler K x number of agents",
+        "grid": {
+          "k": [
+            1,
+            2,
+            4
+          ],
+          "agents": [
+            2,
+            4,
+            8
+          ]
+        }
+      },
+      {
+        "name": "B",
+        "factor": "memory budget: KV pool size (-c) under heavy load",
+        "base": {
+          "k": 4,
+          "agents": 8
+        },
+        "grid": {
+          "ctx": [
+            4096,
+            8192,
+            16384,
+            32768
+          ]
+        }
+      },
+      {
+        "name": "C",
+        "factor": "context length: search results per call (HotpotQA context growth per step)",
+        "grid": {
+          "tools.search_top_k": [
+            2,
+            5,
+            10
+          ]
+        }
+      },
+      {
+        "name": "D",
+        "factor": "idle time between agent steps: extra tool delay (s)",
+        "conditions": [
+          {
+            "tools.python_delay_s": 0,
+            "tools.search_delay_s": 0
+          },
+          {
+            "tools.python_delay_s": 1,
+            "tools.search_delay_s": 1
+          },
+          {
+            "tools.python_delay_s": 3,
+            "tools.search_delay_s": 3
+          },
+          {
+            "tools.python_delay_s": 10,
+            "tools.search_delay_s": 10
+          }
+        ]
+      },
+      {
+        "name": "E",
+        "factor": "context retention: slot KV + host RAM cache / no RAM cache / no prefix reuse at all",
+        "conditions": [
+          {},
+          {
+            "cache_ram": 0
+          },
+          {
+            "llm.cache_prompt": false
+          }
+        ]
+      },
+      {
+        "name": "F",
+        "factor": "response length: final reply short / 500+ word explanation / half and half",
+        "grid": {
+          "tasks.response_length": [
+            "short",
+            "long",
+            "mixed"
+          ]
+        }
+      },
+      {
+        "name": "G",
+        "factor": "long responses under a tight KV budget: decode growth vs the shared pool",
+        "base": {
+          "k": 4,
+          "agents": 8,
+          "ctx": 4096
+        },
+        "grid": {
+          "tasks.response_length": [
+            "short",
+            "long"
+          ]
+        }
+      }
+    ]
+  },
+  "tasks": [
+    "gsm8k:0-9",
+    "hotpotqa:0-9"
+  ],
+  "conditions": {
+    "k1_a2": {
+      "params": {
+        "k": 1,
+        "agents": 2,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k1_a4": {
+      "params": {
+        "k": 1,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k1_a8": {
+      "params": {
+        "k": 1,
+        "agents": 8,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k2_a2": {
+      "params": {
+        "k": 2,
+        "agents": 2,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k2_a4": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A",
+        "C",
+        "D",
+        "E",
+        "F"
+      ]
+    },
+    "k2_a8": {
+      "params": {
+        "k": 2,
+        "agents": 8,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k4_a2": {
+      "params": {
+        "k": 4,
+        "agents": 2,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k4_a4": {
+      "params": {
+        "k": 4,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A"
+      ]
+    },
+    "k4_a8": {
+      "params": {
+        "k": 4,
+        "agents": 8,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "A",
+        "B"
+      ]
+    },
+    "k4_a8_ctx4096": {
+      "params": {
+        "k": 4,
+        "agents": 8,
+        "ctx": 4096,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "B",
+        "G"
+      ]
+    },
+    "k4_a8_ctx8192": {
+      "params": {
+        "k": 4,
+        "agents": 8,
+        "ctx": 8192,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "B"
+      ]
+    },
+    "k4_a8_ctx16384": {
+      "params": {
+        "k": 4,
+        "agents": 8,
+        "ctx": 16384,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "B"
+      ]
+    },
+    "k2_a4_search_top_k2": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 2,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "C"
+      ]
+    },
+    "k2_a4_search_top_k10": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 10,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "C"
+      ]
+    },
+    "k2_a4_python_delay_s0_search_delay_s0": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 0,
+        "tools.search_delay_s": 0,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "D"
+      ]
+    },
+    "k2_a4_python_delay_s1_search_delay_s1": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 1,
+        "tools.search_delay_s": 1,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "D"
+      ]
+    },
+    "k2_a4_python_delay_s10_search_delay_s10": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 10,
+        "tools.search_delay_s": 10,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "D"
+      ]
+    },
+    "k2_a4_cram0": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 0,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "E"
+      ]
+    },
+    "k2_a4_cache_prompt0": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": false,
+        "agent.task_timeout_s": 600
+      },
+      "blocks": [
+        "E"
+      ]
+    },
+    "k2_a4_response_lengthlong": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "long"
+      },
+      "blocks": [
+        "F"
+      ]
+    },
+    "k2_a4_response_lengthmixed": {
+      "params": {
+        "k": 2,
+        "agents": 4,
+        "ctx": 32768,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "mixed"
+      },
+      "blocks": [
+        "F"
+      ]
+    },
+    "k4_a8_ctx4096_response_lengthlong": {
+      "params": {
+        "k": 4,
+        "agents": 8,
+        "ctx": 4096,
+        "np": 4,
+        "cache_ram": 8192,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "tools.search_top_k": 5,
+        "llm.cache_prompt": true,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "long"
+      },
+      "blocks": [
+        "G"
+      ]
+    }
+  }
+}
