@@ -39,7 +39,7 @@ grid = { ctx = [4096, 8192, 16384, 32768] }
 [[block]]
 name = "C"
 factor = "context length: search results per call (HotpotQA context growth per step)"
-grid = { "tools.search_top_k" = [2, 5, 10] }
+grid = { "tools.search_top_k" = [2, 5, 10, 20] }
 
 [[block]]
 name = "D"
@@ -70,3 +70,22 @@ name = "G"
 factor = "long responses under a tight KV budget: decode growth vs the shared pool"
 base = { k = 4, agents = 8, ctx = 4096 }
 grid = { "tasks.response_length" = ["short", "long"] }
+
+# Blocks H and I fill gaps left by A-G (run with --repeats 3): A and D ran only with a 32K pool, where memory
+# never binds, and B/G had too few repeats to place the failure threshold.
+
+[[block]]
+name = "H"
+factor = "concurrency x memory budget: K under tight KV pools, mixed short/long replies"
+base = { agents = 8, "tasks.response_length" = "mixed" }
+grid = { k = [1, 2, 4], ctx = [4096, 6144, 8192] }
+
+[[block]]
+name = "I"
+factor = "idle time between agent steps under a tight KV pool"
+base = { k = 4, agents = 8, ctx = 6144, "tasks.response_length" = "mixed" }
+conditions = [
+    { "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { "tools.python_delay_s" = 3, "tools.search_delay_s" = 3 },
+    { "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+]

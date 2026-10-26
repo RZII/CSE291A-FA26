@@ -23,6 +23,7 @@ Layout:
         events.jsonl, config.json, trajectories/    agent.runner
         scheduler.jsonl    one line per request (scheduler.py)
         memory.jsonl       scripts/sample_memory.py
+        gpu.jsonl          scripts/sample_gpu.py (only where nvidia-smi exists)
         llama.log, scheduler.out, runner.out
 A run whose experiment.json has "finished" set is skipped, so an interrupted experiment can just be rerun.
 """
@@ -34,6 +35,7 @@ import json
 import os
 import random
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -46,8 +48,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LLAMA_PORT, SCHEDULER_PORT = 8080, 8000
 MODEL = "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q8_0"
-SERVER_KEYS = {"k": "k", "agents": "a", "ctx": "ctx", "np": "np", "cache_ram": "cram"}  # key -> short name
+SERVER_KEYS = {"k": "k", "agents": "a", "ctx": "ctx", "np": "np", "cache_ram": "cram",  # key -> short name
+               "ngl": "ngl", "kv_offload": "kvo", "fit": "fit", "lv": "lv"}
 DEFAULTS = {"k": 2, "agents": 4, "ctx": 32768, "np": 4, "cache_ram": 8192}
+# GPU / CPU placement (discrete-GPU machines): passed to llama-server only when a condition sets them, so the
+# llama.cpp defaults apply otherwise. ngl = layers kept in VRAM (the rest run on the CPU), kv_offload = false keeps
+# the KV pool in host RAM, fit = "off" stops llama.cpp from shrinking unset settings to fit free VRAM.
+# lv = log verbosity; 4 logs every host prompt cache save / load (scripts/cache_transfers.py).
+PLACEMENT_FLAGS = {
+    "ngl": lambda v: ["-ngl", str(v)],
+    "kv_offload": lambda v: [] if v else ["--no-kv-offload"],
+    "fit": lambda v: ["--fit", str(v)],
+    "lv": lambda v: ["-lv", str(v)],
+}
 
 
 def port_open(port: int) -> bool:
@@ -114,7 +127,8 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
     for f in ("events.jsonl", "scheduler.jsonl", "memory.jsonl"):  # leftovers of an interrupted attempt
         (run_dir / f).unlink(missing_ok=True)
     llama_cmd = [*shlex.split(args.llama_cmd), "-hf", args.model, "--jinja", "--port", str(LLAMA_PORT),
-                 "-c", str(p["ctx"]), "-np", str(p["np"]), "-kvu", "--metrics", "--cache-ram", str(p["cache_ram"])]
+                 "-c", str(p["ctx"]), "-np", str(p["np"]), "-kvu", "--metrics", "--cache-ram", str(p["cache_ram"]),
+                 *itertools.chain.from_iterable(flag(p[k]) for k, flag in PLACEMENT_FLAGS.items() if k in p)]
     scheduler_cmd = [sys.executable, str(ROOT / "scheduler.py"), "--k", str(p["k"]),
                      "--queue-capacity", "4096", "--max-connections", "4096",  # never reject: failures must come from the model side
                      "--network-timeout", str(args.network_timeout), "--queue-budget", "86400",
@@ -127,7 +141,7 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
                   *itertools.chain.from_iterable(("--set", s) for s in sets)]
     info = {"condition": run, "tasks": tasks, "llama_cmd": llama_cmd, "scheduler_cmd": scheduler_cmd,
             "runner_cmd": runner_cmd, "platform": sys.platform, "thermal_before": thermal(), "finished": None}
-    llama = scheduler = sampler = None
+    llama = scheduler = sampler = gpu_sampler = None
     logs = []
     try:
         logs.append(open(run_dir / "llama.log", "w"))
@@ -147,6 +161,12 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
         sampler = subprocess.Popen([sys.executable, "-m", "scripts.sample_memory", "--pid", str(llama.pid),
                                     "--url", f"http://127.0.0.1:{LLAMA_PORT}", "--out", str(run_dir / "memory.jsonl"),
                                     "--interval", str(args.memory_interval)], cwd=ROOT)
+        if shutil.which("nvidia-smi"):  # discrete GPU: the KV pool lives in VRAM, which sample_memory cannot see
+            info["gpu"] = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+                                          "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()
+            gpu_sampler = subprocess.Popen([sys.executable, "-m", "scripts.sample_gpu", "--pid", str(llama.pid),
+                                            "--out", str(run_dir / "gpu.jsonl"),
+                                            "--interval", str(args.memory_interval)], cwd=ROOT)
         time.sleep(2 * args.memory_interval)  # idle samples before the first request = the baseline footprint
 
         info["t_runner_start"] = time.time()
@@ -158,6 +178,7 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
         time.sleep(2 * args.memory_interval)
     finally:
         stop(sampler)
+        stop(gpu_sampler)
         stop(scheduler, signal.SIGINT)  # SIGINT: scheduler drains its queue, then exits
         stop(llama, signal.SIGINT)
         for f in logs:

@@ -18,7 +18,17 @@ each run dir. Run-level fields:
     output_tokens_per_s         generated tokens (predicted_n) / makespan
     footprint_idle/peak_mb      memory the server itself dirtied: before the first request / max
     rss_peak_mb                 includes the mmapped model weights
-    kv_tokens_peak, kv_tokens_mean, kv_peak_frac     sum over slots of tokens held; frac = peak / ctx
+    kv_tokens_peak, kv_tokens_mean, kv_peak_frac     sum over slots of tokens held (/slots); frac = peak / ctx.
+                                an upper bound: it can pass 1 when the pool is full
+    vram_idle/peak_mb, gpu_util_mean    discrete GPU only (gpu.jsonl): VRAM held by llama-server before the first
+                                request / max; GPU utilization while the agents ran. footprint_* is then host RAM only
+    prefill_ms_per_token        prompt_ms / prompt_n over all requests: what recomputing one token costs
+    cache_saves / _loads, cache_save_mib / _load_mib, cache_save_ms / _load_ms, cache_save_gib_s / _load_gib_s
+                                host prompt cache traffic from llama.log (needs -lv 4, i.e. lv = 4 in the matrix):
+                                on a discrete GPU, VRAM <-> host RAM copies (scripts/cache_transfers.py)
+    kv_full_events              llama.log "failed to find free space in the KV cache": the pool was full (exact)
+    deadline_miss_<N>s          share of tasks not answered within N s (answered later, or failed): the
+                                timeout rate under an N-second deadline, from the same runs
     prompt_tokens, cached_tokens, cached_frac        llama.cpp timings: prompt_n / cache_n sums
     recompute_tokens            within-task prefix lost between steps (see task_summary.py)
     sched_overhead_ms           mean of total_ms - queue_ms - model_request_ms per request
@@ -34,10 +44,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from agent.client import CONTEXT_FULL
+from scripts import cache_transfers
 from scripts.task_summary import summarize
 
 FAILED = ("error", "crash", "timeout")
 MAX_GAP_S = 10
+DEADLINES_S = (60, 120)
+KV_FULL = "failed to find free space in the KV cache"
 
 
 def pct(xs: list[float], q: float) -> float | None:
@@ -71,6 +84,7 @@ def analyze_run(run: Path) -> dict:
     events = read_jsonl(run / "events.jsonl")
     sched = read_jsonl(run / "scheduler.jsonl")
     mem = read_jsonl(run / "memory.jsonl")
+    gpu = read_jsonl(run / "gpu.jsonl")  # discrete-GPU runs only
     config = json.loads((run / "config.json").read_text())
 
     tasks = summarize(events, sched, config, params["k"])
@@ -95,7 +109,13 @@ def analyze_run(run: Path) -> dict:
 
     t0 = exp.get("t_runner_start", math.inf)
     idle = [m["footprint_mb"] for m in mem if m["ts"] < t0]
+    gpu_idle = [g["proc_gpu_mem_mb"] for g in gpu if g["ts"] < t0 and g["proc_gpu_mem_mb"] is not None]
+    gpu_busy = [g["gpu_util"] for g in gpu if t0 <= g["ts"] <= exp.get("t_runner_end", math.inf)]
     kv = [m["kv_tokens"] for m in mem if m.get("kv_tokens") is not None]
+    llama_log = run / "llama.log"
+    kv_full = sum(KV_FULL in line for line in open(llama_log, errors="replace")) if llama_log.exists() else None
+    transfers = cache_transfers.parse(open(llama_log, errors="replace")) if llama_log.exists() else []
+    prefill_ms = sum(t.get("prompt_ms", 0) for t in timings)
     ok_sched = [r for r in sched if r["queue_ms"] is not None and r["model_request_ms"] is not None]
     errors = Counter(error_kind(e) for e in events if e["event"] == "request_error")
     completion = lambda kind=None: [t["total_completion_ms"] / 1000 for t in tasks if kind in (None, t["task_type"])]
@@ -133,6 +153,15 @@ def analyze_run(run: Path) -> dict:
         "kv_tokens_peak": max(kv, default=None),
         "kv_tokens_mean": statistics.mean(kv) if kv else None,
         "kv_peak_frac": max(kv) / params["ctx"] if kv else None,
+        "kv_full_events": kv_full,
+        # host prompt cache traffic (llama-server -lv 4 only) next to the prefill it saves
+        "prefill_ms_per_token": prefill_ms / prompt if prompt else None,
+        **(cache_transfers.summarize(transfers) if transfers else {}),
+        **({"vram_idle_mb": statistics.median(gpu_idle) if gpu_idle else None,
+            "vram_peak_mb": max((g["proc_gpu_mem_mb"] for g in gpu if g["proc_gpu_mem_mb"] is not None), default=None),
+            "gpu_util_mean": statistics.mean(gpu_busy) if gpu_busy else None} if gpu else {}),
+        **{f"deadline_miss_{d}s": sum(e["status"] != "answered" or e["ts"] - starts[e["task_id"]] > d for e in ends) / n
+           if n else None for d in DEADLINES_S},
         "prompt_tokens": prompt, "cached_tokens": cached,
         "cached_frac": cached / (cached + prompt) if cached + prompt else None,
         "recompute_tokens": sum(t["recompute_tokens"] for t in tasks),
@@ -208,8 +237,8 @@ def main():
     # one table per block (a condition shared by several blocks shows up in each); no blocks -> one table
     blocks = sorted({b for c in conds for b in str(c["blocks"]).split(";") if b}) or [None]
     cols = ("accuracy", "failure_rate", "completion_p50_s", "completion_p95_s", "queue_p95_s",
-            "throughput_tasks_per_min", "output_tokens_p95", "footprint_peak_mb", "kv_tokens_peak", "cached_frac",
-            "recompute_tokens")
+            "throughput_tasks_per_min", "output_tokens_p95", "footprint_peak_mb", "kv_tokens_peak", "kv_full_events",
+            "deadline_miss_120s", "cached_frac", "recompute_tokens")
     for b in blocks:
         print(f"\n== block {b} ==" if b else "")
         print(f"{'condition':<36}" + "".join(f"{c[:12]:>14}" for c in cols))

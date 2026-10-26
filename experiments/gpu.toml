@@ -1,0 +1,74 @@
+# GPU / CPU placement on a discrete-GPU machine (AWS g4dn: NVIDIA T4, 16 GB VRAM). Same model, tasks, scheduler
+# and agent as phase1.toml; run with a CUDA build of llama.cpp (scripts/aws_setup.sh):
+#
+#   uv run python -m scripts.run_experiment --matrix experiments/gpu.toml --llama-cmd ~/llama.cpp/build/bin/llama-server \
+#       --cooldown 10 --repeats 3
+#
+# On Apple Silicon CPU and GPU share one memory, so moving KV or layers "to the CPU" frees nothing; here VRAM and
+# host RAM are separate tiers joined by PCIe. Blocks A, B, G repeat the Mac experiments on this hardware (compare
+# trends, not absolute numbers); T1-T3 vary what sits in VRAM and what sits in host RAM.
+# Keys as in phase1.toml, plus ngl / kv_offload / fit / lv (scripts/run_experiment.py PLACEMENT_FLAGS).
+# Transfer costs in isolation (recompute vs moving a context to host RAM and back, per placement):
+#   uv run --group analysis python -m scripts.bench_transfer --out logs/bench_transfer --placements gpu kv_cpu layers18 \
+#       --llama-cmd ~/llama.cpp/build/bin/llama-server
+
+name = "gpu"
+tasks = ["gsm8k:0-9", "hotpotqa:0-9"]
+repeats = 3
+
+[baseline]
+k = 2
+agents = 4
+ctx = 32768
+np = 4
+cache_ram = 8192
+ngl = 99                              # all 36 layers (and the output layer) in VRAM
+kv_offload = true                     # KV pool in VRAM
+fit = "off"                           # no automatic shrinking to free VRAM: every setting is the one given here
+lv = 4                                # log every host prompt cache save / load: VRAM <-> host RAM transfer times
+"tools.python_delay_s" = 3
+"tools.search_delay_s" = 3
+"tools.search_top_k" = 5
+"llm.cache_prompt" = true
+"agent.task_timeout_s" = 600
+"tasks.response_length" = "short"
+
+[[block]]
+name = "A"
+factor = "concurrency: scheduler K x number of agents (Mac block A on this hardware)"
+grid = { k = [1, 2, 4], agents = [2, 4, 8] }
+
+[[block]]
+name = "B"
+factor = "memory budget: KV pool size (-c) under heavy load (Mac block B)"
+base = { k = 4, agents = 8 }
+grid = { ctx = [4096, 8192, 32768] }
+
+[[block]]
+name = "G"
+factor = "long responses under a 4K KV pool (Mac block G)"
+base = { k = 4, agents = 8, ctx = 4096 }
+grid = { "tasks.response_length" = ["short", "long"] }
+
+[[block]]
+name = "T1"
+factor = "KV placement: KV pool in VRAM vs in host RAM (attention then runs on the CPU)"
+base = { k = 4, agents = 8 }
+grid = { kv_offload = [true, false], ctx = [8192, 32768] }
+
+[[block]]
+name = "T2"
+factor = "layer placement: layers kept in VRAM (the rest run on the CPU); frees VRAM, costs speed"
+base = { k = 4, agents = 8 }
+grid = { ngl = [99, 32, 27, 18] }
+
+[[block]]
+name = "T3"
+factor = "host RAM as a second KV tier: contexts pushed out of VRAM kept in host RAM (restored over PCIe) or recomputed"
+base = { k = 4, agents = 8, ctx = 8192, "tasks.response_length" = "mixed" }
+conditions = [
+    { cache_ram = 0, "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { cache_ram = 8192, "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { cache_ram = 0, "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+    { cache_ram = 8192, "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+]

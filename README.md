@@ -71,6 +71,11 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
   default 8 GiB) and restored when the agent returns. `memory.jsonl` tracks both: `footprint_mb` (memory
   the server dirtied: KV pool + RAM cache + buffers; RSS also counts the mmapped weights) and `kv_tokens`
   (tokens held by the slots, from `/slots`).
+- GPU / CPU placement (discrete GPU): `experiments/gpu.toml` adds the keys `ngl` (layers in VRAM), `kv_offload`
+  (false = KV pool in host RAM) and `fit`. Where `nvidia-smi` exists, `gpu.jsonl` records VRAM and GPU
+  utilization (`scripts/sample_gpu.py`), and with `lv = 4` the analysis reports every host prompt cache transfer
+  (VRAM <-> host RAM; `scripts/cache_transfers.py`). `scripts/bench_transfer.py` measures transfer vs recompute
+  time per context length and placement. Set up an AWS g4dn instance with `scripts/aws_setup.sh`.
 - The scheduler now takes `--k`, `--queue-capacity`, `--log`, ... (`python scheduler.py -h`); the
   experiment script gives it a queue large enough that it never rejects, so failures come from the model side.
   Failed requests are logged with a `kind` (`context_overflow`, `timeout`, `queue_full`, ...).
