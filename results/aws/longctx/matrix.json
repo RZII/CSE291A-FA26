@@ -1,0 +1,368 @@
+{
+  "spec": {
+    "name": "longctx",
+    "tasks": [
+      "longqa:0-19"
+    ],
+    "repeats": 3,
+    "baseline": {
+      "k": 4,
+      "agents": 16,
+      "ctx": 65536,
+      "np": 8,
+      "cache_ram": 8192,
+      "ngl": 99,
+      "kv_offload": true,
+      "fit": "off",
+      "lv": 4,
+      "tools.python_delay_s": 3,
+      "tools.search_delay_s": 3,
+      "llm.cache_prompt": true,
+      "agent.max_steps": 16,
+      "agent.task_timeout_s": 600,
+      "tasks.response_length": "short"
+    },
+    "block": [
+      {
+        "name": "L1",
+        "factor": "concurrency x KV budget with long contexts: KV demand exceeds the pool without shrinking it",
+        "grid": {
+          "k": [
+            2,
+            4,
+            8
+          ],
+          "ctx": [
+            32768,
+            65536,
+            98304
+          ]
+        }
+      },
+      {
+        "name": "L2",
+        "factor": "context retention with long contexts: host RAM cache / no host cache / no prefix reuse",
+        "conditions": [
+          {},
+          {
+            "cache_ram": 0
+          },
+          {
+            "llm.cache_prompt": false
+          }
+        ]
+      },
+      {
+        "name": "L3",
+        "factor": "idle time between steps with long contexts: idle agents' KV occupies the pool",
+        "conditions": [
+          {
+            "tools.python_delay_s": 0,
+            "tools.search_delay_s": 0
+          },
+          {
+            "tools.python_delay_s": 3,
+            "tools.search_delay_s": 3
+          },
+          {
+            "tools.python_delay_s": 10,
+            "tools.search_delay_s": 10
+          }
+        ]
+      }
+    ]
+  },
+  "tasks": [
+    "longqa:0-19"
+  ],
+  "conditions": {
+    "k2_a16_ctx32768": {
+      "params": {
+        "k": 2,
+        "agents": 16,
+        "ctx": 32768,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k2_a16": {
+      "params": {
+        "k": 2,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k2_a16_ctx98304": {
+      "params": {
+        "k": 2,
+        "agents": 16,
+        "ctx": 98304,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k4_a16_ctx32768": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 32768,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k4_a16": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1",
+        "L2",
+        "L3"
+      ]
+    },
+    "k4_a16_ctx98304": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 98304,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k8_a16_ctx32768": {
+      "params": {
+        "k": 8,
+        "agents": 16,
+        "ctx": 32768,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k8_a16": {
+      "params": {
+        "k": 8,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k8_a16_ctx98304": {
+      "params": {
+        "k": 8,
+        "agents": 16,
+        "ctx": 98304,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L1"
+      ]
+    },
+    "k4_a16_cram0": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 0,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L2"
+      ]
+    },
+    "k4_a16_cache_prompt0": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 3,
+        "tools.search_delay_s": 3,
+        "llm.cache_prompt": false,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L2"
+      ]
+    },
+    "k4_a16_python_delay_s0_search_delay_s0": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 0,
+        "tools.search_delay_s": 0,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L3"
+      ]
+    },
+    "k4_a16_python_delay_s10_search_delay_s10": {
+      "params": {
+        "k": 4,
+        "agents": 16,
+        "ctx": 65536,
+        "np": 8,
+        "cache_ram": 8192,
+        "ngl": 99,
+        "kv_offload": true,
+        "fit": "off",
+        "lv": 4,
+        "tools.python_delay_s": 10,
+        "tools.search_delay_s": 10,
+        "llm.cache_prompt": true,
+        "agent.max_steps": 16,
+        "agent.task_timeout_s": 600,
+        "tasks.response_length": "short"
+      },
+      "blocks": [
+        "L3"
+      ]
+    }
+  }
+}

@@ -75,7 +75,13 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
   (false = KV pool in host RAM) and `fit`. Where `nvidia-smi` exists, `gpu.jsonl` records VRAM and GPU
   utilization (`scripts/sample_gpu.py`), and with `lv = 4` the analysis reports every host prompt cache transfer
   (VRAM <-> host RAM; `scripts/cache_transfers.py`). `scripts/bench_transfer.py` measures transfer vs recompute
-  time per context length and placement. Set up an AWS g4dn instance with `scripts/aws_setup.sh`.
+  time per context length and placement. Set up an AWS g6.2xlarge instance (NVIDIA L4) with `scripts/aws_setup.sh`.
+- Long-context supplement: `experiments/longctx.toml` runs task type `longqa` (`data/longqa_50.jsonl`, built by
+  `scripts/build_tasks.py longqa` from LongBench): the agent reads a ~10K-word document page by page with the
+  `read_page` tool, so contexts grow to ~18K tokens.
+- Phase 1 results on AWS (the ones the report uses): `results/aws/{gpu,bench_transfer,longctx}`, analysis in
+  `docs/phase1_aws_report.md`, figures in `docs/phase1_aws_figs/`. The earlier Mac runs (`results/phase1/`,
+  `docs/phase1_analysis*.md`) are kept for reference only.
 - The scheduler now takes `--k`, `--queue-capacity`, `--log`, ... (`python scheduler.py -h`); the
   experiment script gives it a queue large enough that it never rejects, so failures come from the model side.
   Failed requests are logged with a `kind` (`context_overflow`, `timeout`, `queue_full`, ...).

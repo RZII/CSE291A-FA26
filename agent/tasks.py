@@ -2,6 +2,7 @@
 
     uv run python -m agent.tasks gsm8k 0      # run task #0 with one agent, print the trajectory + grade
     uv run python -m agent.tasks hotpotqa 3
+    uv run python -m agent.tasks longqa 0
 """
 
 import asyncio
@@ -18,6 +19,7 @@ from agent.config import Config, load_config
 from agent.loop import AgentResult, print_result, run_agent
 from agent.tools import Tool
 from agent.tools.python import make_python_tool
+from agent.tools.read import make_read_tool
 from agent.tools.search import BM25Index, make_search_tool
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -42,6 +44,13 @@ HOTPOTQA_PROMPTS = {
         "End with a line `Final answer: <short answer>`: just the answer, a few words at most."
     ),
 }
+# long-context task: the agent reads its own ~10K-word document page by page, so the context grows to 8-14K tokens
+LONGQA_PROMPT = (
+    "Answer the question using the read_page tool, which returns one page of a long document. The question says "
+    "how many pages the document has. Read the pages one at a time, starting at page 1, and keep reading until you "
+    "have found everything the question needs; the facts you need may be on different pages. Base your answer "
+    "only on the document. End with a line `Final answer: <short answer>`: just the answer, a few words at most."
+)
 
 
 # tasks.response_length = "long": the same tasks, but the final reply carries a long explanation, so the workload
@@ -67,7 +76,7 @@ def long_answer(task: dict, cfg: Config) -> bool:
 
 
 def system_prompt(kind: str, cfg: Config, long: bool = False) -> str:
-    prompt = GSM8K_PROMPT if kind == "gsm8k" else HOTPOTQA_PROMPTS[cfg.tasks.hotpotqa_prompt]
+    prompt = {"gsm8k": GSM8K_PROMPT, "longqa": LONGQA_PROMPT}.get(kind) or HOTPOTQA_PROMPTS[cfg.tasks.hotpotqa_prompt]
     return prompt.replace(*(GSM8K_LONG if kind == "gsm8k" else HOTPOTQA_LONG)) if long else prompt
 
 
@@ -92,11 +101,14 @@ def hotpotqa_index(corpus_file: str = "hotpotqa_corpus.jsonl") -> BM25Index:
     return BM25Index([json.loads(line) for line in open(DATA / corpus_file)])
 
 
-def make_tools(kind: str, cfg: Config) -> list[Tool]:
+def make_tools(kind: str, cfg: Config, task: dict | None = None) -> list[Tool]:
+    """`task` is needed for longqa only: its tool reads that task's own document."""
     if kind == "gsm8k":
         return [make_python_tool(cfg.tools)]
     if kind == "hotpotqa":
         return [make_search_tool(hotpotqa_index(cfg.tasks.hotpotqa_corpus), cfg.tools)]
+    if kind == "longqa":
+        return [make_read_tool(task["pages"], cfg.tools)]
     raise ValueError(f"unknown task type {kind!r}")
 
 
@@ -168,6 +180,7 @@ def grade(task: dict, result: AgentResult) -> dict:
     if result.status != "answered":
         return {"pred": None, "correct": False}
     reply = result.final_answer or ""
+    # longqa answers are HotpotQA answers (LongBench's HotpotQA subset), graded the same way
     return grade_gsm8k(reply, task["answer"]) if task["type"] == "gsm8k" else grade_hotpotqa(reply, task["answer"])
 
 
@@ -180,7 +193,7 @@ async def _demo(kind: str, index: int):
     client = LLMClient(cfg.llm)
     try:
         prompt = system_prompt(kind, cfg, long_answer(task, cfg))
-        res = await run_agent(task["question"], prompt, make_tools(kind, cfg), client, cfg.agent.max_steps)
+        res = await run_agent(task["question"], prompt, make_tools(kind, cfg, task), client, cfg.agent.max_steps)
     finally:
         await client.aclose()
     print_result(res)

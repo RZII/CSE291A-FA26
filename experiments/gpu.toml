@@ -1,4 +1,4 @@
-# GPU / CPU placement on a discrete-GPU machine (AWS g4dn: NVIDIA T4, 16 GB VRAM). Same model, tasks, scheduler
+# GPU / CPU placement on a discrete-GPU machine (AWS g6.2xlarge: NVIDIA L4, 24 GB VRAM). Same model, tasks, scheduler
 # and agent as phase1.toml; run with a CUDA build of llama.cpp (scripts/aws_setup.sh):
 #
 #   uv run python -m scripts.run_experiment --matrix experiments/gpu.toml --llama-cmd ~/llama.cpp/build/bin/llama-server \
@@ -6,7 +6,8 @@
 #
 # On Apple Silicon CPU and GPU share one memory, so moving KV or layers "to the CPU" frees nothing; here VRAM and
 # host RAM are separate tiers joined by PCIe. Blocks A, B, G repeat the Mac experiments on this hardware (compare
-# trends, not absolute numbers); T1-T3 vary what sits in VRAM and what sits in host RAM.
+# trends, not absolute numbers); C, D, E, F, H, I complete the Phase 1 matrix on this hardware, with the same
+# settings as phase1.toml; T1-T3 vary what sits in VRAM and what sits in host RAM.
 # Keys as in phase1.toml, plus ngl / kv_offload / fit / lv (scripts/run_experiment.py PLACEMENT_FLAGS).
 # Transfer costs in isolation (recompute vs moving a context to host RAM and back, per placement):
 #   uv run --group analysis python -m scripts.bench_transfer --out logs/bench_transfer --placements gpu kv_cpu layers18 \
@@ -42,7 +43,7 @@ grid = { k = [1, 2, 4], agents = [2, 4, 8] }
 name = "B"
 factor = "memory budget: KV pool size (-c) under heavy load (Mac block B)"
 base = { k = 4, agents = 8 }
-grid = { ctx = [4096, 8192, 32768] }
+grid = { ctx = [4096, 8192, 16384, 32768] }
 
 [[block]]
 name = "G"
@@ -71,4 +72,51 @@ conditions = [
     { cache_ram = 8192, "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
     { cache_ram = 0, "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
     { cache_ram = 8192, "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+]
+
+# ---- the rest of the Phase 1 matrix (same blocks as phase1.toml) ----
+
+[[block]]
+name = "C"
+factor = "context length: search results per call (HotpotQA context growth per step)"
+grid = { "tools.search_top_k" = [2, 5, 10, 20] }
+
+[[block]]
+name = "D"
+factor = "idle time between agent steps: extra tool delay (s)"
+conditions = [
+    { "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { "tools.python_delay_s" = 1, "tools.search_delay_s" = 1 },
+    { "tools.python_delay_s" = 3, "tools.search_delay_s" = 3 },
+    { "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+]
+
+[[block]]
+name = "E"
+factor = "context retention: slot KV + host RAM cache / no RAM cache / no prefix reuse at all"
+conditions = [
+    {},
+    { cache_ram = 0 },
+    { "llm.cache_prompt" = false },
+]
+
+[[block]]
+name = "F"
+factor = "response length: final reply short / 500+ word explanation / half and half"
+grid = { "tasks.response_length" = ["short", "long", "mixed"] }
+
+[[block]]
+name = "H"
+factor = "concurrency x memory budget: K under tight KV pools, mixed short/long replies"
+base = { agents = 8, "tasks.response_length" = "mixed" }
+grid = { k = [1, 2, 4], ctx = [4096, 6144, 8192] }
+
+[[block]]
+name = "I"
+factor = "idle time between agent steps under a tight KV pool"
+base = { k = 4, agents = 8, ctx = 6144, "tasks.response_length" = "mixed" }
+conditions = [
+    { "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { "tools.python_delay_s" = 3, "tools.search_delay_s" = 3 },
+    { "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
 ]

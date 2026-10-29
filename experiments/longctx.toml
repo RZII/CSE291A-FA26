@@ -1,0 +1,53 @@
+# Long-context supplement (AWS g6.2xlarge, NVIDIA L4 24 GB), same model and runtime as gpu.toml.
+#
+#   uv run python -m scripts.run_experiment --matrix experiments/longctx.toml \
+#       --llama-cmd ~/llama.cpp/build/bin/llama-server --cooldown 10
+#
+# The Phase 1 tasks never pass ~4K tokens, so their KV fits in VRAM with room to spare. Here each agent reads
+# its own ~10K-word document page by page (task type longqa, data/longqa_50.jsonl): a task ends anywhere from
+# ~1.5K to ~18K tokens, and 16 agents together hold far more KV than the pool. The budgets below are what a
+# 24 GB GPU can actually give the KV pool next to the 4.3 GB model (98K tokens = 13.5 GiB), not artificially small.
+
+name = "longctx"
+tasks = ["longqa:0-19"]
+repeats = 3
+
+[baseline]
+k = 4
+agents = 16
+ctx = 65536
+np = 8                                # slots: enough for K up to 8
+cache_ram = 8192
+ngl = 99
+kv_offload = true
+fit = "off"
+lv = 4                                # log host prompt cache transfers (VRAM <-> host RAM)
+"tools.python_delay_s" = 3
+"tools.search_delay_s" = 3            # read_page shares this delay
+"llm.cache_prompt" = true
+"agent.max_steps" = 16                # documents have 9-16 pages
+"agent.task_timeout_s" = 600
+"tasks.response_length" = "short"
+
+[[block]]
+name = "L1"
+factor = "concurrency x KV budget with long contexts: KV demand exceeds the pool without shrinking it"
+grid = { k = [2, 4, 8], ctx = [32768, 65536, 98304] }
+
+[[block]]
+name = "L2"
+factor = "context retention with long contexts: host RAM cache / no host cache / no prefix reuse"
+conditions = [
+    {},
+    { cache_ram = 0 },
+    { "llm.cache_prompt" = false },
+]
+
+[[block]]
+name = "L3"
+factor = "idle time between steps with long contexts: idle agents' KV occupies the pool"
+conditions = [
+    { "tools.python_delay_s" = 0, "tools.search_delay_s" = 0 },
+    { "tools.python_delay_s" = 3, "tools.search_delay_s" = 3 },
+    { "tools.python_delay_s" = 10, "tools.search_delay_s" = 10 },
+]

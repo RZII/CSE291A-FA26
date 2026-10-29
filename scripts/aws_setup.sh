@@ -3,9 +3,8 @@
 #
 #   bash scripts/aws_setup.sh
 #
-# Tested target: g4dn.2xlarge (NVIDIA T4 16 GB, 8 vCPU, 32 GB RAM) with the "Deep Learning Base OSS Nvidia Driver
-# GPU AMI (Ubuntu 22.04)", which ships the NVIDIA driver and the CUDA toolkit. 8 vCPU rather than g4dn.xlarge's 4,
-# because blocks T1/T2 run part of the model on the CPU.
+# Used on g6.2xlarge (NVIDIA L4 24 GB, 8 vCPU, 32 GB RAM) with the "Deep Learning Base AMI with Single CUDA
+# (Ubuntu 24.04)", which ships the NVIDIA driver and the CUDA toolkit. 8 vCPU rather than 4, because blocks T1/T2 run part of the model on the CPU.
 #
 # Builds llama.cpp at the same commit as the Mac runs (build 11669) with CUDA, installs uv and the Python deps,
 # and downloads the model so the first run does not time out on it.
@@ -27,7 +26,8 @@ if [ ! -d "$LLAMA_DIR" ]; then
 fi
 git -C "$LLAMA_DIR" fetch -q origin
 git -C "$LLAMA_DIR" checkout -q "$LLAMA_COMMIT"
-cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
+# native: compile CUDA kernels only for this machine's GPU (all architectures would take far longer)
+cmake -S "$LLAMA_DIR" -B "$LLAMA_DIR/build" -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native -DCMAKE_BUILD_TYPE=Release
 cmake --build "$LLAMA_DIR/build" -j "$(nproc)" --target llama-server
 "$LLAMA_DIR/build/bin/llama-server" --version
 

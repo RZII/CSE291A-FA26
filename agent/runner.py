@@ -44,7 +44,7 @@ async def run_task(task: dict, agent_id: str, cfg: Config | None = None, log: Ev
     try:
         res = await asyncio.wait_for(
             run_agent(
-                task["question"], system_prompt(task["type"], cfg, long), make_tools(task["type"], cfg), client,
+                task["question"], system_prompt(task["type"], cfg, long), make_tools(task["type"], cfg, task), client,
                 cfg.agent.max_steps, tracer,
             ),
             cfg.agent.task_timeout_s or None,

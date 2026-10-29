@@ -30,7 +30,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-DELAY_FIELD = {"gsm8k": "python_delay_s", "hotpotqa": "search_delay_s"}
+DELAY_FIELD = {"gsm8k": "python_delay_s", "hotpotqa": "search_delay_s", "longqa": "search_delay_s"}
 
 
 def summarize(events: list[dict], scheduler_rows: list[dict], config: dict, scheduler_k: int | None) -> list[dict]:
