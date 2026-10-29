@@ -1,18 +1,18 @@
 # Phase 1：AWS GPU 上的基线测量与分析
 
 本文档整理 Phase 1 在 AWS GPU 实例上做的全部实验：实验设置、复现方法、原始数据位置、主要结果和分析。Phase 1
-报告以这里的数据为准，早先在 Mac 上的结果（`results/phase1/`、`docs/phase1_analysis*.md`）不再使用：Phase 2 也在
+报告以这里的数据为准，早先在 Mac 上的结果（`archive/mac_phase1/`）不再使用：Phase 2 也在
 AWS 上进行，而 Mac 的统一内存没有"显存 / 主机内存"之分，测不出 GPU/CPU 之间的搬运代价。
 
 共三部分实验，全部在同一台机器、同一个模型和运行时上完成：
 
 | 部分 | 内容 | 矩阵 | 运行数 | 数据 |
 |---|---|---|---|---|
-| 一 | 基线负载（GSM8K + HotpotQA 短任务）：A–I 组 + GPU/CPU 放置 T1–T3 组 | `experiments/gpu.toml` | 129（43 个条件 × 3） | `results/aws/gpu/` |
-| 二 | 搬运 vs 重算微基准 | `scripts/bench_transfer.py` | 54（3 种放置 × 6 种长度 × 3） | `results/aws/bench_transfer/` |
-| 三 | 长上下文补充实验（逐页阅读长文档） | `experiments/longctx.toml` | 39（13 个条件 × 3） | `results/aws/longctx/` |
+| 一 | 基线负载（GSM8K + HotpotQA 短任务）：A–I 组 + GPU/CPU 放置 T1–T3 组 | `experiments/gpu.toml` | 129（43 个条件 × 3） | `phase1/data/gpu/` |
+| 二 | 搬运 vs 重算微基准 | `scripts/bench_transfer.py` | 54（3 种放置 × 6 种长度 × 3） | `phase1/data/bench_transfer/` |
+| 三 | 长上下文补充实验（逐页阅读长文档） | `experiments/longctx.toml` | 39（13 个条件 × 3） | `phase1/data/longctx/` |
 
-图在 `docs/phase1_aws_figs/`。
+图在 `phase1/figs/`，按条件汇总的表在 `phase1/tables/`。文件说明见 `phase1/README.md`。
 
 ## 1 实验设置
 
@@ -69,8 +69,8 @@ llama-server 启动参数：`-c <ctx> -np <slots> -kvu --cache-ram <MiB> -ngl <�
 uv run python -m scripts.run_experiment --matrix experiments/gpu.toml --llama-cmd ~/llama.cpp/build/bin/llama-server --cooldown 10
 uv run --group analysis python -m scripts.bench_transfer --out logs/bench_transfer --placements gpu kv_cpu layers18 --llama-cmd ~/llama.cpp/build/bin/llama-server
 uv run python -m scripts.run_experiment --matrix experiments/longctx.toml --llama-cmd ~/llama.cpp/build/bin/llama-server --cooldown 10
-uv run python -m scripts.analyze results/aws/gpu          # 生成 runs.csv / conditions.csv
-uv run --group analysis python -m scripts.plot results/aws/gpu
+uv run python -m scripts.analyze phase1/data/gpu          # 生成 runs.csv / conditions.csv
+uv run --group analysis python -m scripts.plot phase1/data/gpu
 ```
 
 每次运行一个目录，内含 `config.json`、`events.jsonl`、`scheduler.jsonl`、`llama.log`、`memory.jsonl`、`gpu.jsonl`、`trajectories/` 等；
@@ -204,7 +204,7 @@ uv run --group analysis python -m scripts.plot results/aws/gpu
 | 8192 | 1152 MiB | 2020 | 604 | 178 | 0.39 |
 | 16384 | 2304 MiB | 5122 | 1202 | 352 | 0.30 |
 
-（放置 = 全部在显存。存约 1.9 GB/s，取约 6.5 GB/s。图：`docs/phase1_aws_figs/transfer.png`）
+（放置 = 全部在显存。存约 1.9 GB/s，取约 6.5 GB/s。图：`phase1/figs/transfer.png`）
 
 - 在独立 GPU 上搬运不是免费的：存+取只比重算便宜 1.7–3.3 倍；但**只看取回**，16K 上下文取回 0.35 s，重算 5.1 s，相差 14 倍。
   存可以在 agent 等工具时做，不在关键路径上；真正影响延迟的是取回。

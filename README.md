@@ -79,9 +79,9 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
 - Long-context supplement: `experiments/longctx.toml` runs task type `longqa` (`data/longqa_50.jsonl`, built by
   `scripts/build_tasks.py longqa` from LongBench): the agent reads a ~10K-word document page by page with the
   `read_page` tool, so contexts grow to ~18K tokens.
-- Phase 1 results on AWS (the ones the report uses): `results/aws/{gpu,bench_transfer,longctx}`, analysis in
-  `docs/phase1_aws_report.md`, figures in `docs/phase1_aws_figs/`. The earlier Mac runs (`results/phase1/`,
-  `docs/phase1_analysis*.md`) are kept for reference only.
+- Phase 1 results: everything for the report is in `phase1/` (start with `phase1/README.md`): the analysis, figures,
+  summary tables and raw runs from AWS. The earlier Mac runs and analyses are in `archive/mac_phase1/`, for
+  reference only.
 - The scheduler now takes `--k`, `--queue-capacity`, `--log`, ... (`python scheduler.py -h`); the
   experiment script gives it a queue large enough that it never rejects, so failures come from the model side.
   Failed requests are logged with a `kind` (`context_overflow`, `timeout`, `queue_full`, ...).
