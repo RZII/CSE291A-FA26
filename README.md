@@ -1,6 +1,12 @@
 # Agent + task set
 
-> This README covers only my part (agent + task set): the llama.cpp server it talks to, and how to run the agent.
+> Agent/task setup, experiment execution, and the AWS reproduction and validation handoff.
+
+The completed AWS validation is published in [results/aws-validation-20261030](results/aws-validation-20261030/README.md):
+27 runs, 450 task executions, raw logs, summaries, plots, a request audit, runtime probes, and cost/stop evidence.
+See the [runbook](docs/aws_runbook.md) for setup and reproduction, and the [results report](docs/aws_validation_results.md)
+for the representative, development, and held-out comparisons. The candidate improved on FIFO K=4 in this sample,
+but did not beat the development-selected fixed K=1. Each condition has three repeats; no significance claim is made.
 
 ## Server
 
@@ -16,7 +22,8 @@ llama serve -hf bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q8_0 --jinja --port 8
   from whatever memory is free at launch, so it would differ run to run.
 - `-np 4 -kvu`: 4 slots sharing one 32K KV pool. An explicit `-np` turns unified KV off unless `-kvu` is given.
 - `--jinja` renders the model's own chat template; needed for `tools` / tool calls.
-- Tested with llama.cpp build `b11540`. Health check: `curl localhost:8080/health`.
+- The original agent setup was tested with llama.cpp build `b11540`; the published AWS validation pins
+  build `b11669`, commit `620d2225c`. Health check: `curl localhost:8080/health`.
 
 ## Agent
 
@@ -63,7 +70,8 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
   several blocks run once.
 - Runs go in shuffled order with a 180 s cooldown between them (`--order`, `--cooldown`), and
   `pmset -g therm` is saved before and after each run, so laptop heat does not line up with one factor.
-- A finished run is skipped, so an interrupted experiment (Ctrl+C) can be rerun with the same command.
+- Completed runs are skipped only after successful exit and log validation. Failed or interrupted attempts are
+  retained separately when rerunning the same command.
 - Ad-hoc sweeps without a matrix file: `--name x --tasks ... --k 1 2 4 --agents 2 8 --sweep SECTION.FIELD=a,b
   --set SECTION.FIELD=v` (full cartesian product).
 - Memory budget: llama-server allocates the KV pool for `-c` tokens at startup (Qwen3-4B: 144 KiB/token,
@@ -82,6 +90,13 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
 - Phase 1 results: everything for the report is in `phase1/` (start with `phase1/README.md`): the analysis, figures,
   summary tables and raw runs from AWS. The earlier Mac runs and analyses are in `archive/mac_phase1/`, for
   reference only.
+- AWS reproduction and runtime validation: see [the runbook](docs/aws_runbook.md) for the pinned environment,
+  three representative conditions, budget guard, log checks, runtime API probe, and development/held-out comparison.
+  Published evidence and archive extraction instructions are in the [results index](results/aws-validation-20261030/README.md).
+  Extracted raw logs use `work/aws-validation-20261030/logs/`. Absolute paths inside the evidence JSON files
+  describe the original run; readers do not need to recreate those paths. SSH private keys are not included.
+  New memory samples label the corrected slot-token estimator as `slots.n_prompt_tokens.v2`; compare historical
+  KV peaks using the separately retained legacy estimate rather than mixing the two definitions.
 - The scheduler now takes `--k`, `--queue-capacity`, `--log`, ... (`python scheduler.py -h`); the
   experiment script gives it a queue large enough that it never rejects, so failures come from the model side.
   Failed requests are logged with a `kind` (`context_overflow`, `timeout`, `queue_full`, ...).
