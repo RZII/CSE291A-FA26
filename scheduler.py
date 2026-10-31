@@ -10,6 +10,7 @@ import signal
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
@@ -26,7 +27,17 @@ argument_parser.add_argument("--port", type=int, default=8000)
 argument_parser.add_argument("--network-timeout", type=float, default=60, help="秒；流式下是两块数据之间最多等多久")
 argument_parser.add_argument("--queue-budget", type=float, default=300, help="秒；排队超过即返回 504")
 argument_parser.add_argument("--log", default="work/requests_minimal.jsonl")
+argument_parser.add_argument("--policy", choices=["fifo", "kv-admission"], default="fifo")
+argument_parser.add_argument("--kv-budget", type=int, default=0, help="共享 KV 池总 token 数；kv-admission 必填")
+argument_parser.add_argument("--kv-margin-tokens", type=int, default=256, help="每个在途请求额外预留的 token 数")
+argument_parser.add_argument("--kv-headroom", type=float, default=0.90, help="准入最多预留总 KV 预算的这一比例")
 arguments = argument_parser.parse_args()
+if arguments.k < 1:
+    argument_parser.error("--k must be positive")
+if arguments.policy == "kv-admission" and arguments.kv_budget < 1:
+    argument_parser.error("kv-admission requires positive --kv-budget")
+if arguments.kv_margin_tokens < 0 or not 0 < arguments.kv_headroom <= 1:
+    argument_parser.error("--kv-margin-tokens must be nonnegative and --kv-headroom must be in (0, 1]")
 
 concurrency = arguments.k
 queue_capacity = arguments.queue_capacity
@@ -37,11 +48,145 @@ server_address = ("127.0.0.1", arguments.port)
 network_timeout_seconds = arguments.network_timeout  # 流式下是“两块数据之间最多等多久”，不是整段回答的总时长
 queue_wait_budget_seconds = arguments.queue_budget  # baseline 里相当于不丢请求：排队多久本身就是要测的量
 log_path = Path(arguments.log)
+model_origin = urllib.parse.urlunsplit((*urllib.parse.urlsplit(model_url)[:2], "", "", ""))
 
 waiting_queue = queue.Queue(maxsize=queue_capacity)
 connection_slots = threading.BoundedSemaphore(maximum_connections)
 admission_lock = threading.Lock()
 stopping = threading.Event()
+
+
+def runtime_json(path, body=None):
+    """Native llama.cpp read-only/token-count endpoints; never change generation body."""
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(model_origin + path, data=data,
+                                     headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=min(2.0, network_timeout_seconds)) as response:
+        return json.load(response)
+
+
+def estimate_reservation(request_record):
+    """Estimate active demand, not allocator free space or an eviction guarantee.
+
+    This pinned runtime's input_tokens endpoint uses the same chat-template and
+    tools parser as generation. Resident idle slot tokens are telemetry only:
+    waiting for those to disappear would deadlock because the runtime clears or
+    reuses them only when another request arrives.
+    """
+    started = time.monotonic()
+    record = request_record
+    body = record["body"]
+    reservation = None
+    try:
+        count = runtime_json("/v1/chat/completions/input_tokens", body)["input_tokens"]
+        output = body.get("max_tokens", body.get("max_completion_tokens"))
+        if type(count) is not int or count < 0:
+            raise ValueError("invalid_input_tokens")
+        record["policy_prompt_tokens"] = count
+        if type(output) is not int or output < 0:
+            raise ValueError("unbounded_or_missing_output_limit")
+        reservation = count + output + arguments.kv_margin_tokens
+        record["policy_output_reservation_tokens"] = output
+    except Exception as error:
+        # A truncated HTTP body can raise http.client.IncompleteRead rather than
+        # OSError; any native counter failure must use the logged solo fallback.
+        record["policy_estimate_error"] = type(error).__name__ + ": " + str(error)
+    try:
+        slots = runtime_json("/slots")
+        record["policy_observed_resident_tokens"] = sum(int(s.get("n_prompt_tokens", 0)) for s in slots)
+        record["policy_observed_active_slots"] = sum(bool(s.get("is_processing")) for s in slots)
+    except Exception as error:
+        record["policy_observation_error"] = type(error).__name__ + ": " + str(error)
+    record["policy_estimate_ms"] = (time.monotonic() - started) * 1000
+    record["policy_reservation_tokens"] = reservation
+    return reservation
+
+
+class KVAdmission:
+    """FIFO tickets + active token reservations, bounded by the original K.
+
+    Unknown demand and a request larger than the soft budget run alone, without
+    dropping the task or changing its output limit. Such requests can still
+    overflow the real runtime. Cache occupancy and fragmentation remain outside
+    this estimator's control and must be measured separately.
+    """
+    def __init__(self, budget, maximum_active):
+        self.budget = budget
+        self.maximum_active = maximum_active
+        self.condition = threading.Condition()
+        self.issued = 0
+        self.next_ticket = 0
+        self.cancelled = set()
+        self.active = {}
+
+    def issue(self):
+        with self.condition:
+            ticket = self.issued
+            self.issued += 1
+            return ticket
+
+    def advance(self):
+        while self.next_ticket in self.cancelled:
+            self.cancelled.remove(self.next_ticket)
+            self.next_ticket += 1
+
+    def cancel(self, ticket):
+        with self.condition:
+            if ticket < self.next_ticket:
+                return
+            self.cancelled.add(ticket)
+            self.advance()
+            self.condition.notify_all()
+
+    def admit(self, record):
+        reservation = estimate_reservation(record)
+        started = time.monotonic()
+        ticket = record["policy_ticket"]
+        deadline = record["enqueued_time"] + queue_wait_budget_seconds
+        with self.condition:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.cancelled.add(ticket)
+                    self.advance()
+                    self.condition.notify_all()
+                    record["policy_wait_ms"] = (time.monotonic() - started) * 1000
+                    record["policy_reason"] = "queue_expired"
+                    return False
+                known_active = all(value is not None for value in self.active.values())
+                fits = (reservation is not None and known_active and
+                        sum(self.active.values()) + reservation <= self.budget)
+                if ticket == self.next_ticket and len(self.active) < self.maximum_active and (not self.active or fits):
+                    if reservation is None:
+                        reason = "estimate_error_single"
+                    elif reservation > self.budget:
+                        reason = "oversize_single"
+                    else:
+                        reason = "within_budget"
+                    self.active[ticket] = reservation
+                    self.next_ticket += 1
+                    self.advance()
+                    record.update(policy_reason=reason, policy_budget_tokens=self.budget,
+                                  policy_active_requests_at_admit=len(self.active),
+                                  policy_active_tokens_at_admit=(sum(self.active.values()) if known_active and reservation is not None else None),
+                                  policy_wait_ms=(time.monotonic() - started) * 1000)
+                    self.condition.notify_all()
+                    return True
+                self.condition.wait(timeout=min(remaining, 0.5))
+
+    def release(self, ticket):
+        with self.condition:
+            self.active.pop(ticket, None)
+            # Also cancel an unadmitted ticket if an unexpected worker error
+            # occurred; otherwise all later FIFO tickets could remain blocked.
+            if ticket >= self.next_ticket:
+                self.cancelled.add(ticket)
+                self.advance()
+            self.condition.notify_all()
+
+
+kv_admission = (KVAdmission(max(1, int(arguments.kv_budget * arguments.kv_headroom)), concurrency)
+                if arguments.policy == "kv-admission" else None)
 
 # ==================== 附加：日志准备 开始 ====================
 log_lock = threading.Lock()
@@ -73,7 +218,9 @@ def write_log(request_record, response_sent):
         "http_status": request_record["status"],
         "response_sent": response_sent,
         "error": request_record["error"],
+        "policy": arguments.policy,
     }
+    log_record.update({key: value for key, value in request_record.items() if key.startswith("policy_")})
     log_text = json.dumps(log_record, ensure_ascii=False)
     try:
         with log_lock:
@@ -133,7 +280,10 @@ def scheduler_worker(worker_number):
         if request_record is None:
             waiting_queue.task_done()
             return
+        reserved = False
         try:
+            if kv_admission is not None:
+                reserved = kv_admission.admit(request_record)
             # ==================== 计时：排队 开始 ====================
             # enqueued_time 在接收线程里填好，取出后相减即可，不保存更多时间点。
             with admission_lock:
@@ -141,7 +291,7 @@ def scheduler_worker(worker_number):
                 request_record["queue_ms"] = queue_ms
             # ==================== 计时：排队 结束 ====================
 
-            if queue_ms > queue_wait_budget_seconds * 1000:
+            if (kv_admission is not None and not reserved) or queue_ms > queue_wait_budget_seconds * 1000:
                 request_record["status"] = 504
                 request_record["error"] = "queue_expired"
                 request_record["response"] = error_response("queue_expired")
@@ -173,6 +323,8 @@ def scheduler_worker(worker_number):
             request_record["error"] = str(error)
             request_record["response"] = error_response(str(error))
         finally:
+            if kv_admission is not None:
+                kv_admission.release(request_record["policy_ticket"])
             finished_notice = request_record["notice"]
             finished_notice.set()
             waiting_queue.task_done()
@@ -248,8 +400,12 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 # ==================== 附加：入队前计时 结束 ====================
 
                 try:
+                    if kv_admission is not None:
+                        request_record["policy_ticket"] = kv_admission.issue()
                     waiting_queue.put_nowait(request_record)
                 except queue.Full:
+                    if kv_admission is not None:
+                        kv_admission.cancel(request_record["policy_ticket"])
                     rejection = "queue_full"
         if rejection is not None:
             request_record["status"] = 429 if rejection == "queue_full" else 503
@@ -355,6 +511,8 @@ for worker_index in range(concurrency):
     worker_thread.start()
 signal.signal(signal.SIGTERM, stop_signal)
 print("精简记录版启动：", server_address, "K=", concurrency, flush=True)
+print("准入策略：", arguments.policy,
+      "KV soft budget=" + str(kv_admission.budget) if kv_admission else "", flush=True)
 print("日志：", log_path.resolve(), flush=True)
 try:
     http_server.serve_forever()

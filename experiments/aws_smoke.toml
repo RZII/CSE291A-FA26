@@ -1,0 +1,34 @@
+# Small environment check using the AWS short-task baseline.
+# This is a smoke run, not a replacement for the Phase 1 measurements.
+#
+# Preview:
+#   uv run python -m scripts.run_experiment --matrix experiments/aws_smoke.toml --dry-run
+# Run on the GPU instance after scripts/aws_setup.sh:
+#   uv run python -m scripts.run_experiment --matrix experiments/aws_smoke.toml \
+#       --llama-cmd ~/llama.cpp/build/bin/llama-server --cooldown 0
+
+name = "aws_smoke"
+tasks = ["gsm8k:0-1", "hotpotqa:0-1"]
+repeats = 1
+
+[baseline]
+k = 2
+agents = 4
+ctx = 32768
+np = 4
+cache_ram = 8192
+ngl = 99
+kv_offload = true
+fit = "off"
+lv = 4
+"tools.python_delay_s" = 3
+"tools.search_delay_s" = 3
+"tools.search_top_k" = 5
+"llm.cache_prompt" = true
+"agent.task_timeout_s" = 600
+"tasks.response_length" = "short"
+
+[[block]]
+name = "SMOKE"
+factor = "check CUDA model serving, FIFO, tools and experiment logs on a new instance"
+conditions = [{}]

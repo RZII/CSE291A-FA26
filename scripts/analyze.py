@@ -112,6 +112,8 @@ def analyze_run(run: Path) -> dict:
     gpu_idle = [g["proc_gpu_mem_mb"] for g in gpu if g["ts"] < t0 and g["proc_gpu_mem_mb"] is not None]
     gpu_busy = [g["gpu_util"] for g in gpu if t0 <= g["ts"] <= exp.get("t_runner_end", math.inf)]
     kv = [m["kv_tokens"] for m in mem if m.get("kv_tokens") is not None]
+    kv_legacy = [m.get("kv_tokens_legacy_prompt_plus_decoded", m.get("kv_tokens")) for m in mem
+                 if m.get("kv_tokens_legacy_prompt_plus_decoded", m.get("kv_tokens")) is not None]
     llama_log = run / "llama.log"
     kv_full = sum(KV_FULL in line for line in open(llama_log, errors="replace")) if llama_log.exists() else None
     transfers = cache_transfers.parse(open(llama_log, errors="replace")) if llama_log.exists() else []
@@ -119,6 +121,8 @@ def analyze_run(run: Path) -> dict:
     ok_sched = [r for r in sched if r["queue_ms"] is not None and r["model_request_ms"] is not None]
     errors = Counter(error_kind(e) for e in events if e["event"] == "request_error")
     completion = lambda kind=None: [t["total_completion_ms"] / 1000 for t in tasks if kind in (None, t["task_type"])]
+    answered_times = [e["ts"] - starts[e["task_id"]] for e in ends if e["status"] == "answered"]
+    correct_count = sum(bool(e.get("correct")) for e in ends)
     long = {e["task_id"]: e.get("long_answer", False) for e in events if e["event"] == "task_start"}
     by_length = lambda is_long: [t["total_completion_ms"] / 1000 for t in tasks if long[t["task_id"]] == is_long]
 
@@ -128,10 +132,15 @@ def analyze_run(run: Path) -> dict:
         "tasks": n, **{s: status.get(s, 0) for s in ("answered", "truncated", "max_steps", *FAILED)},
         **{f"req_error:{k}": v for k, v in sorted(errors.items())},
         "accuracy": sum(bool(e.get("correct")) for e in ends) / n if n else None,
+        "correct": correct_count,
+        "runner_exit_code": exp.get("runner_exit_code"),
+        "task_start_count": len(starts),
         "failure_rate": sum(status[s] for s in FAILED) / n if n else None,
         "completion_p50_s": pct(completion(), 0.5),
         "completion_p95_s": pct(completion(), 0.95),
         "completion_p99_s": pct(completion(), 0.99),
+        "answered_completion_p50_s": pct(answered_times, 0.5),
+        "answered_completion_p95_s": pct(answered_times, 0.95),
         **{f"{kind}_completion_{q}_s": pct(completion(kind), v)
            for kind in ("gsm8k", "hotpotqa") for q, v in (("p50", 0.5), ("p95", 0.95))},
         "long_tasks": sum(long.values()),
@@ -142,6 +151,7 @@ def analyze_run(run: Path) -> dict:
         "ttft_p50_s": pct(ttft, 0.5), "ttft_p95_s": pct(ttft, 0.95),
         "makespan_s": makespan,
         "throughput_tasks_per_min": status["answered"] / makespan * 60 if makespan else None,
+        "correct_tasks_per_min": correct_count / makespan * 60 if makespan else None,
         "output_tokens_per_s": predicted / makespan if makespan else None,
         "output_tokens_p50": pct([t["predicted_n"] for t in timings], 0.5),
         "output_tokens_p95": pct([t["predicted_n"] for t in timings], 0.95),
@@ -152,6 +162,9 @@ def analyze_run(run: Path) -> dict:
         "rss_peak_mb": max((m["rss_mb"] for m in mem), default=None),
         "kv_tokens_peak": max(kv, default=None),
         "kv_tokens_mean": statistics.mean(kv) if kv else None,
+        "kv_tokens_estimator": ";".join(sorted({m.get("kv_tokens_estimator", "legacy.prompt_plus_decoded.v1")
+                                               for m in mem})),
+        "kv_tokens_legacy_peak": max(kv_legacy, default=None),
         "kv_peak_frac": max(kv) / params["ctx"] if kv else None,
         "kv_full_events": kv_full,
         # host prompt cache traffic (llama-server -lv 4 only) next to the prefill it saves
@@ -167,6 +180,12 @@ def analyze_run(run: Path) -> dict:
         "recompute_tokens": sum(t["recompute_tokens"] for t in tasks),
         "sched_overhead_ms": statistics.mean(r["total_ms"] - r["queue_ms"] - r["model_request_ms"] for r in ok_sched)
         if ok_sched else None,
+        "policy_estimate_ms_mean": statistics.mean(r.get("policy_estimate_ms", 0) for r in ok_sched)
+        if ok_sched else None,
+        "policy_estimate_ms_p95": pct([r.get("policy_estimate_ms", 0) for r in ok_sched], 0.95),
+        "policy_wait_ms_p95": pct([r.get("policy_wait_ms", 0) for r in ok_sched], 0.95),
+        "policy_estimate_errors": sum(bool(r.get("policy_estimate_error")) for r in sched),
+        "policy_oversize_single": sum(r.get("policy_reason") == "oversize_single" for r in sched),
         # longest gap between memory samples: the sampler runs every 0.5 s, so a gap of many seconds means the
         # machine slept (e.g. laptop lid closed) and every timing in this run is invalid
         "max_sample_gap_s": max((b["ts"] - a["ts"] for a, b in zip(mem, mem[1:])), default=None),
@@ -183,7 +202,8 @@ def aggregate(rows: list[dict]) -> list[dict]:
     for r in rows:
         groups[r["condition"]].append(r)
     headline = ("accuracy", "failure_rate", "completion_p50_s", "completion_p95_s", "throughput_tasks_per_min",
-                "footprint_peak_mb", "kv_tokens_peak")
+                "footprint_peak_mb", "kv_tokens_peak", "correct_tasks_per_min", "answered_completion_p95_s",
+                "policy_estimate_ms_mean", "policy_wait_ms_p95")
     out = []
     for name, rs in groups.items():
         agg = {"condition": name, "repeats": len(rs)}

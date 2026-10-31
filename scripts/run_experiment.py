@@ -33,6 +33,7 @@ import hashlib
 import itertools
 import json
 import os
+import platform
 import random
 import shlex
 import shutil
@@ -49,7 +50,8 @@ ROOT = Path(__file__).resolve().parent.parent
 LLAMA_PORT, SCHEDULER_PORT = 8080, 8000
 MODEL = "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q8_0"
 SERVER_KEYS = {"k": "k", "agents": "a", "ctx": "ctx", "np": "np", "cache_ram": "cram",  # key -> short name
-               "ngl": "ngl", "kv_offload": "kvo", "fit": "fit", "lv": "lv"}
+               "ngl": "ngl", "kv_offload": "kvo", "fit": "fit", "lv": "lv", "policy": "policy",
+               "kv_margin_tokens": "margin", "kv_headroom": "headroom"}
 DEFAULTS = {"k": 2, "agents": 4, "ctx": 32768, "np": 4, "cache_ram": 8192}
 # GPU / CPU placement (discrete-GPU machines): passed to llama-server only when a condition sets them, so the
 # llama.cpp defaults apply otherwise. ngl = layers kept in VRAM (the rest run on the CPU), kv_offload = false keeps
@@ -124,7 +126,7 @@ def stop(proc: subprocess.Popen | None, sig=signal.SIGTERM, timeout_s: float = 3
 def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
     p = run["params"]
     run_dir.mkdir(parents=True, exist_ok=True)
-    for f in ("events.jsonl", "scheduler.jsonl", "memory.jsonl"):  # leftovers of an interrupted attempt
+    for f in ("events.jsonl", "scheduler.jsonl", "memory.jsonl", "gpu.jsonl"):
         (run_dir / f).unlink(missing_ok=True)
     llama_cmd = [*shlex.split(args.llama_cmd), "-hf", args.model, "--jinja", "--port", str(LLAMA_PORT),
                  "-c", str(p["ctx"]), "-np", str(p["np"]), "-kvu", "--metrics", "--cache-ram", str(p["cache_ram"]),
@@ -133,6 +135,10 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
                      "--queue-capacity", "4096", "--max-connections", "4096",  # never reject: failures must come from the model side
                      "--network-timeout", str(args.network_timeout), "--queue-budget", "86400",
                      "--port", str(SCHEDULER_PORT), "--log", str(run_dir / "scheduler.jsonl")]
+    if p.get("policy", "fifo") != "fifo":
+        scheduler_cmd += ["--policy", p["policy"], "--kv-budget", str(p["ctx"]),
+                          "--kv-margin-tokens", str(p.get("kv_margin_tokens", 256)),
+                          "--kv-headroom", str(p.get("kv_headroom", 0.90))]
     sets = [f"{k}={json.dumps(v)}" for k, v in p.items() if "." in k]  # json literals parse as TOML too
     runner_cmd = [sys.executable, "-m", "agent.runner", *tasks, "--agents", str(p["agents"]),
                   "--seed", str(run["repeat"]), "--out", str(run_dir),
@@ -140,7 +146,15 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
                   "--set", f"llm.read_timeout_s={args.network_timeout}",
                   *itertools.chain.from_iterable(("--set", s) for s in sets)]
     info = {"condition": run, "tasks": tasks, "llama_cmd": llama_cmd, "scheduler_cmd": scheduler_cmd,
-            "runner_cmd": runner_cmd, "platform": sys.platform, "thermal_before": thermal(), "finished": None}
+            "runner_cmd": runner_cmd, "platform": sys.platform, "thermal_before": thermal(), "finished": None,
+            "python_version": sys.version, "os_platform": platform.platform(),
+            "source_sha256": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                              for path in [ROOT / "scheduler.py", Path(__file__), ROOT / "scripts/sample_memory.py",
+                                           ROOT / "config.toml", ROOT / "uv.lock"]}}
+    marker = ROOT / ".source-commit"
+    info["source_base_commit"] = marker.read_text().strip() if marker.exists() else subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    (run_dir / "experiment.json").write_text(json.dumps(info, indent=2))
     llama = scheduler = sampler = gpu_sampler = None
     logs = []
     try:
@@ -172,10 +186,20 @@ def run_one(run_dir: Path, run: dict, tasks: list[str], args) -> dict:
         info["t_runner_start"] = time.time()
         (run_dir / "experiment.json").write_text(json.dumps(info, indent=2))
         with open(run_dir / "runner.out", "w") as out:
-            runner = subprocess.run(runner_cmd, stdout=out, stderr=subprocess.STDOUT, cwd=ROOT)
+            try:
+                runner = subprocess.run(runner_cmd, stdout=out, stderr=subprocess.STDOUT, cwd=ROOT,
+                                        timeout=args.run_timeout_s)
+                info["runner_exit_code"] = runner.returncode
+            except subprocess.TimeoutExpired:
+                info["runner_exit_code"] = 124
+                info["run_timeout_s"] = args.run_timeout_s
         info["t_runner_end"] = time.time()
-        info["runner_exit_code"] = runner.returncode
         time.sleep(2 * args.memory_interval)
+    except Exception as error:
+        info["setup_or_runner_error"] = f"{type(error).__name__}: {error}"
+        info["failed_at"] = time.time()
+        (run_dir / "experiment.json").write_text(json.dumps(info, indent=2))
+        raise
     finally:
         stop(sampler)
         stop(gpu_sampler)
@@ -263,6 +287,7 @@ def main():
     p.add_argument("--model", default=MODEL)
     p.add_argument("--network-timeout", type=float, default=600, help="scheduler/agent read timeout, seconds")
     p.add_argument("--memory-interval", type=float, default=0.5)
+    p.add_argument("--run-timeout-s", type=float, help="maximum runner wall time per run; default has no extra limit")
     p.add_argument("--dry-run", action="store_true", help="list the runs without starting anything")
     args = p.parse_args()
 
@@ -302,9 +327,21 @@ def main():
     for i, run in enumerate(runs, 1):
         run_dir = out / run["run"]
         done = run_dir / "experiment.json"
-        if done.exists() and json.loads(done.read_text()).get("finished"):
+        try:
+            previous = json.loads(done.read_text()) if done.exists() else {}
+        except (OSError, json.JSONDecodeError) as error:
+            previous = {}
+            print(f"    unreadable prior metadata will be retained: {error}", flush=True)
+        if previous.get("finished") and previous.get("runner_exit_code") == 0:
             print(f"[{i}/{len(runs)}] {run['run']}: already finished, skipped")
             continue
+        if run_dir.exists():
+            # Keep failed and interrupted evidence outside the analyzer's one-level glob.
+            attempts = out / "attempts"
+            attempts.mkdir(exist_ok=True)
+            archived = attempts / f"{run['run']}_{time.time_ns()}"
+            run_dir.rename(archived)
+            print(f"    previous attempt retained at {archived}", flush=True)
         if ran and args.cooldown:
             time.sleep(args.cooldown)
         t0 = time.time()
