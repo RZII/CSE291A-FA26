@@ -1,0 +1,33 @@
+# Frozen after development selection and before any held-out model request.
+name = "aws_phase2_test"
+tasks = ["longqa:20-39"]
+repeats = 3
+
+[baseline]
+k = 4
+agents = 16
+ctx = 65536
+np = 8
+cache_ram = 8192
+ngl = 99
+kv_offload = true
+fit = "off"
+lv = 4
+policy = "fifo"
+kv_margin_tokens = 256
+kv_headroom = 0.9
+"tools.python_delay_s" = 3
+"tools.search_delay_s" = 3
+"llm.cache_prompt" = true
+"agent.max_steps" = 16
+"agent.task_timeout_s" = 600
+"tasks.response_length" = "short"
+
+[[block]]
+name = "HELDOUT"
+factor = "same-budget frozen comparison of FIFO K4, development-selected fixed K, and KV admission"
+conditions = [
+    {k = 4, policy = "fifo"},
+    {k = 1, policy = "fifo"},
+    {k = 4, policy = "kv-admission"},
+]

@@ -9,11 +9,17 @@ Fields per sample (sizes in MiB):
                          (KV cache, compute buffers, host prompt cache). This is what grows with load.
     sys_available_mb     memory the OS could still hand out
     slots_busy           slots currently processing a request
-    kv_tokens            sum over slots of n_prompt_tokens + n_decoded: tokens each slot holds,
-                         idle slots included (they keep their KV until it is reused or evicted).
-                         An estimate: /slots does not report the KV cells actually allocated.
+    kv_tokens            sum of /slots n_prompt_tokens, including retained idle contexts.
+                         In build 11669 this field is the current context token-vector size;
+                         it already includes generated tokens, so do NOT add n_decoded.
+                         An estimate: shared sequences, queued decode work, checkpoints and
+                         the host prompt cache are not physical KV-cell accounting.
     slot_tokens          the same per slot, so retention of idle slots is visible
-    requests_processing, requests_deferred, n_tokens_max    raw from /metrics (needs --metrics)
+    active_slot_tokens, idle_slot_tokens   the estimate split by is_processing
+    kv_tokens_estimator  versioned measurement semantics; v1 double-counted decoded context
+    kv_tokens_legacy_prompt_plus_decoded   old formula, only for auditing old/new measurements
+    requests_processing, requests_deferred, n_tokens_max    raw from /metrics (needs --metrics).
+                         n_tokens_max is a sequence-length high watermark, not pool occupancy.
 
 Runs until SIGTERM / SIGINT, or until the process exits.
 """
@@ -85,10 +91,25 @@ def get(url: str, timeout: float = 2.0) -> str | None:
 def slot_fields(base_url: str) -> dict:
     text = get(base_url + "/slots")
     if text is None:
-        return {"slots_busy": None, "kv_tokens": None, "slot_tokens": None}
+        return {"slots_busy": None, "kv_tokens": None, "slot_tokens": None,
+                "active_slot_tokens": None, "idle_slot_tokens": None,
+                "kv_tokens_estimator": "slots.n_prompt_tokens.v2",
+                "kv_tokens_legacy_prompt_plus_decoded": None}
     slots = json.loads(text)
-    tokens = [s.get("n_prompt_tokens", 0) + sum(t.get("n_decoded", 0) for t in s.get("next_token", [])) for s in slots]
-    return {"slots_busy": sum(bool(s.get("is_processing")) for s in slots), "kv_tokens": sum(tokens), "slot_tokens": tokens}
+    tokens = [s.get("n_prompt_tokens", 0) for s in slots]
+    decoded = []
+    for slot in slots:
+        # The pinned runtime emits a list; older releases used one object.
+        next_token = slot.get("next_token", [])
+        if isinstance(next_token, dict):
+            next_token = [next_token]
+        decoded.append(sum(t.get("n_decoded", 0) for t in next_token))
+    active = sum(n for slot, n in zip(slots, tokens) if slot.get("is_processing"))
+    return {"slots_busy": sum(bool(s.get("is_processing")) for s in slots),
+            "kv_tokens": sum(tokens), "slot_tokens": tokens,
+            "active_slot_tokens": active, "idle_slot_tokens": sum(tokens) - active,
+            "kv_tokens_estimator": "slots.n_prompt_tokens.v2",
+            "kv_tokens_legacy_prompt_plus_decoded": sum(tokens) + sum(decoded)}
 
 
 METRICS = ("requests_processing", "requests_deferred", "n_tokens_max")

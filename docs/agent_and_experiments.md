@@ -16,7 +16,8 @@ llama serve -hf bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF:Q8_0 --jinja --port 8
   from whatever memory is free at launch, so it would differ run to run.
 - `-np 4 -kvu`: 4 slots sharing one 32K KV pool. An explicit `-np` turns unified KV off unless `-kvu` is given.
 - `--jinja` renders the model's own chat template; needed for `tools` / tool calls.
-- Tested with llama.cpp build `b11540`. Health check: `curl localhost:8080/health`.
+- The original agent setup was tested with llama.cpp build `b11540`; the published AWS validation pins
+  build `b11669`, commit `620d2225c`. Health check: `curl localhost:8080/health`.
 
 ## Agent
 
@@ -63,7 +64,8 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
   several blocks run once.
 - Runs go in shuffled order with a 180 s cooldown between them (`--order`, `--cooldown`), and
   `pmset -g therm` is saved before and after each run, so laptop heat does not line up with one factor.
-- A finished run is skipped, so an interrupted experiment (Ctrl+C) can be rerun with the same command.
+- A run is skipped only if its previous attempt finished with runner exit code 0. Failed or interrupted attempts are
+  moved to `logs/<matrix>/attempts/` when rerunning the same command.
 - Ad-hoc sweeps without a matrix file: `--name x --tasks ... --k 1 2 4 --agents 2 8 --sweep SECTION.FIELD=a,b
   --set SECTION.FIELD=v` (full cartesian product).
 - Memory budget: llama-server allocates the KV pool for `-c` tokens at startup (Qwen3-4B: 144 KiB/token,
@@ -81,6 +83,10 @@ uv run --group analysis python -m scripts.plot logs/phase1    # -> logs/phase1/p
   `read_page` tool, so contexts grow to ~18K tokens.
 - Phase 1 results: everything for the report is in `phase1/` (start with `phase1/README.md`): the analysis, figures,
   summary tables and raw runs from AWS.
+- AWS reproduction and runtime validation: see [the runbook](aws_runbook.md) for the pinned environment,
+  three representative conditions, budget guard, log checks, runtime API probe, and development/held-out comparison.
+  Published evidence and archive extraction instructions are in the [results index](../results/aws-validation-20261030/README.md).
+  New memory samples label the corrected slot-token estimator as `slots.n_prompt_tokens.v2`.
 - `kv_tokens` in the Phase 1 runs adds `n_decoded` to `n_prompt_tokens`, which already includes generated
   tokens, so it overstates slot occupancy (about 13% on short tasks, negligible on long ones).
 - The scheduler now takes `--k`, `--queue-capacity`, `--log`, ... (`python scheduler.py -h`); the

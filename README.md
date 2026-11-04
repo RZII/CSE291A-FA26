@@ -19,18 +19,33 @@ Everything the Phase 1 report uses is in [`phase1/`](phase1/); start with [`phas
 All results come from AWS g6.2xlarge (NVIDIA L4 24 GB), Qwen3-4B-Instruct-2507 Q8_0 and llama.cpp build 11669
 (commit 620d2225c).
 
+## AWS reproduction and validation
+
+The completed AWS validation is published in [`results/aws-validation-20261030/`](results/aws-validation-20261030/README.md):
+27 runs, 450 task executions, raw logs, summaries, plots, a request audit, runtime probes, and cost/stop evidence.
+See the [runbook](docs/aws_runbook.md) for setup and reproduction, and the [results report](docs/aws_validation_results.md)
+for the representative, development, and held-out comparisons. The candidate (`scheduler.py --policy kv-admission`)
+improved on FIFO K=4 in this sample, but did not beat the development-selected fixed K=1. Each condition has three
+repeats; no significance claim is made.
+
+Extracted raw logs use `work/aws-validation-20261030/logs/`. Absolute paths inside the evidence JSON files describe
+the original run; readers do not need to recreate those paths. New memory samples label the corrected slot-token
+estimator as `slots.n_prompt_tokens.v2`; compare historical KV peaks (including those in `phase1/`) using the
+separately retained legacy estimate rather than mixing the two definitions.
+
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `scheduler.py` | FIFO scheduler: HTTP proxy with a fixed number K of concurrent model requests |
+| `scheduler.py` | FIFO scheduler (default): HTTP proxy with a fixed number K of concurrent model requests; `--policy kv-admission` adds optional KV-budget admission |
 | `agent/` | Agent loop, tools (Python, BM25 retrieval, `read_page`), task sets, event logging |
 | `data/` | Task sets: GSM8K, HotpotQA (+ retrieval corpus), long documents from LongBench |
-| `experiments/` | Experiment matrices: `gpu.toml` (short workload, GPU/CPU placement), `longctx.toml` (long contexts); `phase1.toml` is the original matrix `gpu.toml` builds on |
-| `scripts/` | Experiment runner, memory/GPU samplers, analysis, plots, transfer benchmark, AWS setup |
+| `experiments/` | Experiment matrices: `gpu.toml` (short workload, GPU/CPU placement), `longctx.toml` (long contexts); `phase1.toml` is the original matrix `gpu.toml` builds on; `representative_*.toml`, `phase2_dev.toml`, `aws_smoke.toml` for the AWS validation |
+| `scripts/` | Experiment runner, memory/GPU samplers, analysis, plots, transfer benchmark, AWS setup; validation runner, audit and summary (`run_validation.py`, `validation_audit.py`, `validation_summary.py`), runtime probe |
+| `results/` | Frozen AWS validation evidence (byte-preserved; see `.gitattributes`) |
 | `tests/` | Unit tests (`uv run pytest`; never while an experiment is running, since live tests hit port 8080) |
 | `config.toml` | Agent, model and tool settings |
-| `docs/` | Usage notes ([`docs/agent_and_experiments.md`](docs/agent_and_experiments.md)), project description, division of work |
+| `docs/` | Usage notes ([`docs/agent_and_experiments.md`](docs/agent_and_experiments.md)), AWS [runbook](docs/aws_runbook.md) and [validation results](docs/aws_validation_results.md), project description, division of work |
 | `调度器文件说明.md`, `给1号和3号的接口与日志说明.md` | Scheduler notes and the agent/scheduler interface and log format |
 
 ## Reproducing Phase 1
@@ -56,7 +71,8 @@ uv run --group analysis python -m scripts.plot logs/gpu    # logs/gpu/plots/*.pn
 ```
 
 Each run starts a fresh llama-server, the scheduler with the run's K, the memory and GPU samplers and the
-agent runner, and writes its logs to `logs/<matrix>/<condition>_r<repeat>/`. A finished run is skipped, so an
-interrupted matrix can be resumed with the same command. `--dry-run` lists the runs, `--blocks` selects blocks.
+agent runner, and writes its logs to `logs/<matrix>/<condition>_r<repeat>/`. A run is skipped only after it exited
+successfully, so an interrupted matrix can be resumed with the same command; failed or interrupted attempts are kept
+under `logs/<matrix>/attempts/`. `--dry-run` lists the runs, `--blocks` selects blocks.
 
 To run the agent or scheduler on their own, see [`docs/agent_and_experiments.md`](docs/agent_and_experiments.md).
