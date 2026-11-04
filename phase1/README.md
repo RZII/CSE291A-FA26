@@ -1,7 +1,6 @@
 # Phase 1 资料（AWS）
 
-Phase 1 报告需要的实验、数据和分析都在这个文件夹里。所有数据来自 AWS g6.2xlarge（NVIDIA L4）；早先在 Mac 上跑的结果
-不再使用，已移到 `archive/mac_phase1/`，可以忽略。
+Phase 1 报告需要的实验、数据和分析都在这个文件夹里。所有数据来自 AWS g6.2xlarge（NVIDIA L4）。
 
 ## 先看什么
 
